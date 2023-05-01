@@ -95,78 +95,130 @@ pub const SSH_FILEXFER_ATTR_FLAGS_IMMUTABLE: u32 = 0x00000200;
 pub const SSH_FILEXFER_ATTR_FLAGS_SYNC: u32 = 0x00000400;
 pub const SSH_FILEXFER_ATTR_FLAGS_TRANSLATION_ERR: u32 = 0x00000800;
 
-pub const SSH_FILEXFER_TYPE_REGULAR: u8 = 1;
-pub const SSH_FILEXFER_TYPE_DIRECTORY: u8 = 2;
-pub const SSH_FILEXFER_TYPE_SYMLINK: u8 = 3;
-pub const SSH_FILEXFER_TYPE_SPECIAL: u8 = 4;
-pub const SSH_FILEXFER_TYPE_UNKNOWN: u8 = 5;
-pub const SSH_FILEXFER_TYPE_SOCKET: u8 = 6;
-pub const SSH_FILEXFER_TYPE_CHAR_DEVICE: u8 = 7;
-pub const SSH_FILEXFER_TYPE_BLOCK_DEVICE: u8 = 8;
-pub const SSH_FILEXFER_TYPE_FIFO: u8 = 9;
+const SSH_FILEXFER_TYPE_REGULAR: u8 = 1;
+const SSH_FILEXFER_TYPE_DIRECTORY: u8 = 2;
+const SSH_FILEXFER_TYPE_SYMLINK: u8 = 3;
+const SSH_FILEXFER_TYPE_SPECIAL: u8 = 4;
+const SSH_FILEXFER_TYPE_UNKNOWN: u8 = 5;
+const SSH_FILEXFER_TYPE_SOCKET: u8 = 6;
+const SSH_FILEXFER_TYPE_CHAR_DEVICE: u8 = 7;
+const SSH_FILEXFER_TYPE_BLOCK_DEVICE: u8 = 8;
+const SSH_FILEXFER_TYPE_FIFO: u8 = 9;
 
-pub const SSH_FXP_INIT: u8 = 1;
-pub const SSH_FXP_VERSION: u8 = 2;
-pub const SSH_FXP_OPEN: u8 = 3;
-pub const SSH_FXP_CLOSE: u8 = 4;
-pub const SSH_FXP_READ: u8 = 5;
-pub const SSH_FXP_WRITE: u8 = 6;
-pub const SSH_FXP_LSTAT: u8 = 7;
-pub const SSH_FXP_FSTAT: u8 = 8;
-pub const SSH_FXP_SETSTAT: u8 = 9;
-pub const SSH_FXP_FSETSTAT: u8 = 10;
-pub const SSH_FXP_OPENDIR: u8 = 11;
-pub const SSH_FXP_READDIR: u8 = 12;
-pub const SSH_FXP_REMOVE: u8 = 13;
-pub const SSH_FXP_MKDIR: u8 = 14;
-pub const SSH_FXP_RMDIR: u8 = 15;
-pub const SSH_FXP_REALPATH: u8 = 16;
-pub const SSH_FXP_STAT: u8 = 17;
-pub const SSH_FXP_RENAME: u8 = 18;
-pub const SSH_FXP_READLINK: u8 = 19;
-pub const SSH_FXP_LINK: u8 = 21;
-pub const SSH_FXP_BLOCK: u8 = 22;
-pub const SSH_FXP_UNBLOCK: u8 = 23;
-pub const SSH_FXP_STATUS: u8 = 101;
-pub const SSH_FXP_HANDLE: u8 = 102;
-pub const SSH_FXP_DATA: u8 = 103;
-pub const SSH_FXP_NAME: u8 = 104;
-pub const SSH_FXP_ATTRS: u8 = 105;
-pub const SSH_FXP_EXTENDED: u8 = 200;
-pub const SSH_FXP_EXTENDED_REPLY: u8 = 201;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    Regular,
+    Directory,
+    Symlink,
+    Special,
+    Unknown,
+    Socket,
+    CharDevice,
+    BlockDevice,
+    Fifo,
+}
 
-pub const SSH_FX_OK: u32 = 0;
-pub const SSH_FX_EOF: u32 = 1;
-pub const SSH_FX_NO_SUCH_FILE: u32 = 2;
-pub const SSH_FX_PERMISSION_DENIED: u32 = 3;
-pub const SSH_FX_FAILURE: u32 = 4;
-pub const SSH_FX_BAD_MESSAGE: u32 = 5;
-pub const SSH_FX_NO_CONNECTION: u32 = 6;
-pub const SSH_FX_CONNECTION_LOST: u32 = 7;
-pub const SSH_FX_OP_UNSUPPORTED: u32 = 8;
-pub const SSH_FX_INVALID_HANDLE: u32 = 9;
-pub const SSH_FX_NO_SUCH_PATH: u32 = 10;
-pub const SSH_FX_FILE_ALREADY_EXISTS: u32 = 11;
-pub const SSH_FX_WRITE_PROTECT: u32 = 12;
-pub const SSH_FX_NO_MEDIA: u32 = 13;
-pub const SSH_FX_NO_SPACE_ON_FILESYSTEM: u32 = 14;
-pub const SSH_FX_QUOTA_EXCEEDED: u32 = 15;
-pub const SSH_FX_UNKNOWN_PRINCIPAL: u32 = 16;
-pub const SSH_FX_LOCK_CONFLICT: u32 = 17;
-pub const SSH_FX_DIR_NOT_EMPTY: u32 = 18;
-pub const SSH_FX_NOT_A_DIRECTORY: u32 = 19;
-pub const SSH_FX_INVALID_FILENAME: u32 = 20;
-pub const SSH_FX_LINK_LOOP: u32 = 21;
-pub const SSH_FX_CANNOT_DELETE: u32 = 22;
-pub const SSH_FX_INVALID_PARAMETER: u32 = 23;
-pub const SSH_FX_FILE_IS_A_DIRECTORY: u32 = 24;
-pub const SSH_FX_BYTE_RANGE_LOCK_CONFLICT: u32 = 25;
-pub const SSH_FX_BYTE_RANGE_LOCK_REFUSED: u32 = 26;
-pub const SSH_FX_DELETE_PENDING: u32 = 27;
-pub const SSH_FX_FILE_CORRUPT: u32 = 28;
-pub const SSH_FX_OWNER_INVALID: u32 = 29;
-pub const SSH_FX_GROUP_INVALID: u32 = 30;
-pub const SSH_FX_NO_MATCHING_BYTE_RANGE_LOCK: u32 = 31;
+impl Default for Kind {
+    fn default() -> Self {
+        Kind::Unknown
+    }
+}
+
+impl From<Kind> for u8 {
+    fn from(val: Kind) -> Self {
+        match val {
+            Kind::Regular => SSH_FILEXFER_TYPE_REGULAR,
+            Kind::Directory => SSH_FILEXFER_TYPE_DIRECTORY,
+            Kind::Symlink => SSH_FILEXFER_TYPE_SYMLINK,
+            Kind::Special => SSH_FILEXFER_TYPE_SPECIAL,
+            Kind::Unknown => SSH_FILEXFER_TYPE_UNKNOWN,
+            Kind::Socket => SSH_FILEXFER_TYPE_SOCKET,
+            Kind::CharDevice => SSH_FILEXFER_TYPE_CHAR_DEVICE,
+            Kind::BlockDevice => SSH_FILEXFER_TYPE_BLOCK_DEVICE,
+            Kind::Fifo => SSH_FILEXFER_TYPE_FIFO,
+        }
+    }
+}
+
+impl From<u8> for Kind {
+    fn from(kind: u8) -> Self {
+        match kind {
+            SSH_FILEXFER_TYPE_REGULAR => Kind::Regular,
+            SSH_FILEXFER_TYPE_DIRECTORY => Kind::Directory,
+            SSH_FILEXFER_TYPE_SYMLINK => Kind::Symlink,
+            SSH_FILEXFER_TYPE_SPECIAL => Kind::Special,
+            SSH_FILEXFER_TYPE_UNKNOWN => Kind::Unknown,
+            SSH_FILEXFER_TYPE_SOCKET => Kind::Socket,
+            SSH_FILEXFER_TYPE_CHAR_DEVICE => Kind::CharDevice,
+            SSH_FILEXFER_TYPE_BLOCK_DEVICE => Kind::BlockDevice,
+            SSH_FILEXFER_TYPE_FIFO => Kind::Fifo,
+            _ => panic!("Unknown file type"),
+        }
+    }
+}
+
+const SSH_FXP_INIT: u8 = 1;
+const SSH_FXP_VERSION: u8 = 2;
+const SSH_FXP_OPEN: u8 = 3;
+const SSH_FXP_CLOSE: u8 = 4;
+const SSH_FXP_READ: u8 = 5;
+const SSH_FXP_WRITE: u8 = 6;
+const SSH_FXP_LSTAT: u8 = 7;
+const SSH_FXP_FSTAT: u8 = 8;
+const SSH_FXP_SETSTAT: u8 = 9;
+const SSH_FXP_FSETSTAT: u8 = 10;
+const SSH_FXP_OPENDIR: u8 = 11;
+const SSH_FXP_READDIR: u8 = 12;
+const SSH_FXP_REMOVE: u8 = 13;
+const SSH_FXP_MKDIR: u8 = 14;
+const SSH_FXP_RMDIR: u8 = 15;
+const SSH_FXP_REALPATH: u8 = 16;
+const SSH_FXP_STAT: u8 = 17;
+const SSH_FXP_RENAME: u8 = 18;
+const SSH_FXP_READLINK: u8 = 19;
+const SSH_FXP_LINK: u8 = 21;
+const SSH_FXP_BLOCK: u8 = 22;
+const SSH_FXP_UNBLOCK: u8 = 23;
+const SSH_FXP_STATUS: u8 = 101;
+const SSH_FXP_HANDLE: u8 = 102;
+const SSH_FXP_DATA: u8 = 103;
+const SSH_FXP_NAME: u8 = 104;
+const SSH_FXP_ATTRS: u8 = 105;
+const SSH_FXP_EXTENDED: u8 = 200;
+const SSH_FXP_EXTENDED_REPLY: u8 = 201;
+
+const SSH_FX_OK: u32 = 0;
+const SSH_FX_EOF: u32 = 1;
+const SSH_FX_NO_SUCH_FILE: u32 = 2;
+const SSH_FX_PERMISSION_DENIED: u32 = 3;
+const SSH_FX_FAILURE: u32 = 4;
+const SSH_FX_BAD_MESSAGE: u32 = 5;
+const SSH_FX_NO_CONNECTION: u32 = 6;
+const SSH_FX_CONNECTION_LOST: u32 = 7;
+const SSH_FX_OP_UNSUPPORTED: u32 = 8;
+const SSH_FX_INVALID_HANDLE: u32 = 9;
+const SSH_FX_NO_SUCH_PATH: u32 = 10;
+const SSH_FX_FILE_ALREADY_EXISTS: u32 = 11;
+const SSH_FX_WRITE_PROTECT: u32 = 12;
+const SSH_FX_NO_MEDIA: u32 = 13;
+const SSH_FX_NO_SPACE_ON_FILESYSTEM: u32 = 14;
+const SSH_FX_QUOTA_EXCEEDED: u32 = 15;
+const SSH_FX_UNKNOWN_PRINCIPAL: u32 = 16;
+const SSH_FX_LOCK_CONFLICT: u32 = 17;
+const SSH_FX_DIR_NOT_EMPTY: u32 = 18;
+const SSH_FX_NOT_A_DIRECTORY: u32 = 19;
+const SSH_FX_INVALID_FILENAME: u32 = 20;
+const SSH_FX_LINK_LOOP: u32 = 21;
+const SSH_FX_CANNOT_DELETE: u32 = 22;
+const SSH_FX_INVALID_PARAMETER: u32 = 23;
+const SSH_FX_FILE_IS_A_DIRECTORY: u32 = 24;
+const SSH_FX_BYTE_RANGE_LOCK_CONFLICT: u32 = 25;
+const SSH_FX_BYTE_RANGE_LOCK_REFUSED: u32 = 26;
+const SSH_FX_DELETE_PENDING: u32 = 27;
+const SSH_FX_FILE_CORRUPT: u32 = 28;
+const SSH_FX_OWNER_INVALID: u32 = 29;
+const SSH_FX_GROUP_INVALID: u32 = 30;
+const SSH_FX_NO_MATCHING_BYTE_RANGE_LOCK: u32 = 31;
 
 pub const SSH_FXF_ACCESS_DISPOSITION: u32 = 0x00000007;
 pub const SSH_FXF_CREATE_NEW: u32 = 0x00000000;
@@ -208,7 +260,7 @@ pub const ACE4_SYNCHRONIZE: u32 = 0x00100000;
 
 #[derive(Debug, PartialEq, Eq, Clone, Default)]
 pub struct SFTPAttributes {
-    pub kind: u8,
+    pub kind: Kind,
 
     pub size: Option<u64>,
 
@@ -232,7 +284,7 @@ pub struct SFTPAttributes {
 }
 
 impl SFTPAttributes {
-    pub fn new(kind: u8) -> Self {
+    pub fn new(kind: Kind) -> Self {
         Self {
             kind,
             size: None,
@@ -263,7 +315,7 @@ impl SFTPAttributes {
 
         writer.write_u32::<BigEndian>(valid_attribute_flags)?;
 
-        writer.write_u8(self.kind)?;
+        writer.write_u8(self.kind.into())?;
 
         if let Some(size) = self.size {
             writer.write_u64::<BigEndian>(size)?;
@@ -567,7 +619,7 @@ impl SFTPAttributes {
         };
 
         Ok(Self {
-            kind,
+            kind: kind.into(),
             size,
             allocation_size,
             owner,
