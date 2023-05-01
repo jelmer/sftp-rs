@@ -1,5 +1,4 @@
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
-use std::fs::File;
 use std::io::Cursor;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::io::AsRawFd;
@@ -259,7 +258,7 @@ pub const ACE4_WRITE_OWNER: u32 = 0x00080000;
 pub const ACE4_SYNCHRONIZE: u32 = 0x00100000;
 
 #[derive(Debug, PartialEq, Eq, Clone, Default)]
-pub struct SFTPAttributes {
+pub struct Attributes {
     pub kind: Kind,
 
     pub size: Option<u64>,
@@ -283,7 +282,7 @@ pub struct SFTPAttributes {
     pub extended: Option<Vec<(String, String)>>,
 }
 
-impl SFTPAttributes {
+impl Attributes {
     pub fn new(kind: Kind) -> Self {
         Self {
             kind,
@@ -648,7 +647,7 @@ pub struct SftpClient {
     extensions: Vec<(String, String)>,
 }
 
-fn parse_ssh_fxp_name(respdata: &[u8]) -> Result<Vec<(String, SFTPAttributes)>> {
+fn parse_ssh_fxp_name(respdata: &[u8]) -> Result<Vec<(String, Attributes)>> {
     let mut reader = std::io::Cursor::new(respdata);
     let count = reader.read_u32::<BigEndian>()?;
     let mut files = Vec::with_capacity(count as usize);
@@ -662,7 +661,7 @@ fn parse_ssh_fxp_name(respdata: &[u8]) -> Result<Vec<(String, SFTPAttributes)>> 
                 format!("Invalid filename: {}", e),
             )
         })?;
-        let attrs = SFTPAttributes::deserialize(&mut reader)?;
+        let attrs = Attributes::deserialize(&mut reader)?;
         files.push((filename, attrs));
     }
     Ok(files)
@@ -676,9 +675,9 @@ fn parse_ssh_fxp_data(respdata: &[u8]) -> Result<Vec<u8>> {
     Ok(data)
 }
 
-fn parse_ssh_fxp_attrs(respdata: &[u8]) -> Result<SFTPAttributes> {
+fn parse_ssh_fxp_attrs(respdata: &[u8]) -> Result<Attributes> {
     let mut reader = std::io::Cursor::new(respdata);
-    SFTPAttributes::deserialize(&mut reader).map_err(Error::Io)
+    Attributes::deserialize(&mut reader).map_err(Error::Io)
 }
 
 fn parse_ssh_fxp_status(respdata: &[u8]) -> Result<()> {
@@ -743,7 +742,7 @@ fn parse_ssh_fxp_status(respdata: &[u8]) -> Result<()> {
 
 type RequestId = u32;
 
-impl Channel for File {}
+impl Channel for std::fs::File {}
 
 fn read_raw_packet(channel: &mut dyn Channel) -> std::io::Result<(u8, Vec<u8>)> {
     let mut buf = [0u8; 4];
@@ -821,12 +820,12 @@ impl SftpClient {
     }
 
     pub fn from_fd(fd: i32) -> std::io::Result<Self> {
-        let file = unsafe { File::from_raw_fd(fd) };
+        let file = unsafe { std::fs::File::from_raw_fd(fd) };
         Self::new(Box::new(file))
     }
 
     /// Create a new directory
-    pub fn mkdir(&mut self, path: &str, attr: &SFTPAttributes) -> Result<()> {
+    pub fn mkdir(&mut self, path: &str, attr: &Attributes) -> Result<()> {
         let mut buf = Vec::new();
         buf.write_u32::<BigEndian>(path.len() as u32)?;
         buf.extend_from_slice(path.as_bytes());
@@ -901,8 +900,8 @@ impl SftpClient {
         path: &str,
         desired_access: u32,
         flags: u32,
-        attr: &SFTPAttributes,
-    ) -> Result<SftpFile> {
+        attr: &Attributes,
+    ) -> Result<File> {
         let mut buf = Vec::new();
         buf.write_u32::<BigEndian>(path.len() as u32)?;
         buf.extend_from_slice(path.as_bytes());
@@ -916,7 +915,7 @@ impl SftpClient {
                 let handle_len = reader.read_u32::<BigEndian>()?;
                 let mut handle = vec![0u8; handle_len as usize];
                 reader.read_exact(&mut handle)?;
-                Ok(SftpFile(handle))
+                Ok(File(handle))
             }
             SSH_FXP_STATUS => parse_ssh_fxp_status(respdata.as_slice())
                 .map(|_| panic!("Unexpected status response")),
@@ -976,7 +975,7 @@ impl SftpClient {
         }
     }
 
-    pub fn setstat(&mut self, path: &str, attr: &SFTPAttributes) -> Result<()> {
+    pub fn setstat(&mut self, path: &str, attr: &Attributes) -> Result<()> {
         let mut buf = Vec::new();
         buf.write_u32::<BigEndian>(path.len() as u32)?;
         buf.extend_from_slice(path.as_bytes());
@@ -990,7 +989,7 @@ impl SftpClient {
         }
     }
 
-    pub fn stat(&mut self, path: &str) -> Result<SFTPAttributes> {
+    pub fn stat(&mut self, path: &str) -> Result<Attributes> {
         let mut buf = Vec::new();
         buf.write_u32::<BigEndian>(path.len() as u32)?;
         buf.extend_from_slice(path.as_bytes());
@@ -1034,7 +1033,7 @@ impl SftpClient {
         }
     }
 
-    pub fn lstat(&mut self, path: &str) -> Result<SFTPAttributes> {
+    pub fn lstat(&mut self, path: &str) -> Result<Attributes> {
         let mut buf = Vec::new();
         buf.write_u32::<BigEndian>(path.len() as u32)?;
         buf.extend_from_slice(path.as_bytes());
@@ -1049,7 +1048,7 @@ impl SftpClient {
         }
     }
 
-    pub fn opendir(&mut self, path: &str) -> Result<SftpDir> {
+    pub fn opendir(&mut self, path: &str) -> Result<Directory> {
         let mut buf = Vec::new();
         buf.write_u32::<BigEndian>(path.len() as u32)?;
         buf.extend_from_slice(path.as_bytes());
@@ -1057,7 +1056,7 @@ impl SftpClient {
         let (respcmd, respdata) = self.process(SSH_FXP_OPENDIR, buf.as_slice())?;
 
         match respcmd {
-            SSH_FXP_HANDLE => Ok(SftpDir(respdata)),
+            SSH_FXP_HANDLE => Ok(Directory(respdata)),
             SSH_FXP_STATUS => parse_ssh_fxp_status(respdata.as_slice())
                 .map(|_| panic!("Unexpected status response")),
             _ => panic!("Unexpected response: {}", respcmd),
@@ -1079,13 +1078,7 @@ impl SftpClient {
         }
     }
 
-    pub fn block(
-        &mut self,
-        file: &SftpFile,
-        offset: u64,
-        length: u64,
-        lockmask: u32,
-    ) -> Result<()> {
+    pub fn block(&mut self, file: &File, offset: u64, length: u64, lockmask: u32) -> Result<()> {
         let mut buf = Vec::new();
         buf.extend_from_slice(&file.0);
         buf.write_u64::<BigEndian>(offset)?;
@@ -1099,7 +1092,7 @@ impl SftpClient {
         }
     }
 
-    pub fn unblock(&mut self, file: &SftpFile, offset: u64, length: u64) -> Result<()> {
+    pub fn unblock(&mut self, file: &File, offset: u64, length: u64) -> Result<()> {
         let mut buf = Vec::new();
         buf.extend_from_slice(&file.0);
         buf.write_u64::<BigEndian>(offset)?;
@@ -1112,7 +1105,7 @@ impl SftpClient {
         }
     }
 
-    pub fn fsetstat(&mut self, file: &SftpFile, attr: &SFTPAttributes) -> Result<()> {
+    pub fn fsetstat(&mut self, file: &File, attr: &Attributes) -> Result<()> {
         let mut buf = Vec::new();
         buf.extend_from_slice(&file.0);
         buf.extend_from_slice(&attr.serialize()?);
@@ -1124,7 +1117,7 @@ impl SftpClient {
         }
     }
 
-    pub fn fstat(&mut self, file: &SftpFile) -> Result<SFTPAttributes> {
+    pub fn fstat(&mut self, file: &File) -> Result<Attributes> {
         let mut buf = Vec::new();
         buf.extend_from_slice(&file.0);
 
@@ -1137,7 +1130,7 @@ impl SftpClient {
         }
     }
 
-    pub fn pwrite(&mut self, file: &SftpFile, offset: u64, data: &[u8]) -> Result<()> {
+    pub fn pwrite(&mut self, file: &File, offset: u64, data: &[u8]) -> Result<()> {
         let mut buf = Vec::new();
         buf.extend_from_slice(&file.0);
         buf.write_u64::<BigEndian>(offset).unwrap();
@@ -1152,7 +1145,7 @@ impl SftpClient {
         }
     }
 
-    pub fn pread(&mut self, file: &SftpFile, offset: u64, length: u32) -> Result<Vec<u8>> {
+    pub fn pread(&mut self, file: &File, offset: u64, length: u32) -> Result<Vec<u8>> {
         let mut buf = Vec::new();
         buf.extend_from_slice(&file.0);
         buf.write_u64::<BigEndian>(offset).unwrap();
@@ -1166,7 +1159,7 @@ impl SftpClient {
         }
     }
 
-    pub fn fclose(&mut self, file: &SftpFile) -> Result<()> {
+    pub fn fclose(&mut self, file: &File) -> Result<()> {
         let mut buf = Vec::new();
         buf.extend_from_slice(&file.0);
 
@@ -1177,7 +1170,7 @@ impl SftpClient {
         }
     }
 
-    pub fn flineseek(&mut self, file: &SftpFile, lineno: u64) -> Result<()> {
+    pub fn flineseek(&mut self, file: &File, lineno: u64) -> Result<()> {
         let mut buf = Vec::new();
         buf.extend_from_slice(&file.0);
         buf.write_u64::<BigEndian>(lineno)?;
@@ -1186,7 +1179,7 @@ impl SftpClient {
         Ok(())
     }
 
-    pub fn closedir(&mut self, dir: &SftpDir) -> Result<()> {
+    pub fn closedir(&mut self, dir: &Directory) -> Result<()> {
         let mut buf = Vec::new();
         buf.extend_from_slice(&dir.0);
 
@@ -1197,7 +1190,7 @@ impl SftpClient {
         }
     }
 
-    pub fn readdir(&mut self, dir: &SftpDir) -> Result<Vec<(String, SFTPAttributes)>> {
+    pub fn readdir(&mut self, dir: &Directory) -> Result<Vec<(String, Attributes)>> {
         let mut buf = Vec::new();
         buf.extend_from_slice(&dir.0);
 
@@ -1211,5 +1204,5 @@ impl SftpClient {
     }
 }
 
-pub struct SftpFile(Vec<u8>);
-pub struct SftpDir(Vec<u8>);
+pub struct File(Vec<u8>);
+pub struct Directory(Vec<u8>);
