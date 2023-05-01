@@ -1,0 +1,14 @@
+[package]
+name = "sftp"
+version = "0.1.0"
+authors = [ "Jelmer Vernooij <jelmer@jelmer.uk>"]
+edition = "2021"
+license = "Apache-2.0"
+description = "SFTP Implementation"
+repository = "https://github.com/jelmer/sftp-rs"
+homepage = "https://github.com/jelmer/sftp-rs"
+
+[lib]
+
+[dependencies]
+byteorder = "1"
