@@ -591,7 +591,6 @@ impl SFTPAttributes {
 
 pub struct SftpClient {
     channel: Mutex<Box<dyn Channel>>,
-    cwd: Option<String>,
     last_request_id: std::sync::atomic::AtomicU32,
     version: u32,
     extensions: Vec<(String, String)>,
@@ -755,7 +754,6 @@ impl SftpClient {
         let (version, extensions) = initialize(&mut *channel)?;
         Ok(Self {
             channel: Mutex::new(channel),
-            cwd: None,
             version,
             extensions,
             last_request_id: std::sync::atomic::AtomicU32::new(0),
@@ -777,8 +775,6 @@ impl SftpClient {
 
     /// Create a new directory
     pub fn mkdir(&mut self, path: &str, attr: &SFTPAttributes) -> Result<()> {
-        let path = self._adjust_cwd(path);
-
         let mut buf = Vec::new();
         buf.write_u32::<BigEndian>(path.len() as u32)?;
         buf.extend_from_slice(path.as_bytes());
@@ -794,8 +790,6 @@ impl SftpClient {
 
     /// Remove a directory
     pub fn rmdir(&mut self, path: &str) -> Result<()> {
-        let path = self._adjust_cwd(path);
-
         let mut buf = Vec::new();
         buf.write_u32::<BigEndian>(path.len() as u32)?;
         buf.extend_from_slice(path.as_bytes());
@@ -809,8 +803,6 @@ impl SftpClient {
     }
 
     pub fn readlink(&mut self, path: &str) -> Result<String> {
-        let path = self._adjust_cwd(path);
-
         let mut buf = Vec::new();
         buf.write_u32::<BigEndian>(path.len() as u32)?;
         buf.extend_from_slice(path.as_bytes());
@@ -837,9 +829,6 @@ impl SftpClient {
     }
 
     fn link(&mut self, path: &str, target: &str, symlink: bool) -> Result<()> {
-        let path = self._adjust_cwd(path);
-        let target = self._adjust_cwd(target);
-
         let mut buf = Vec::new();
         buf.write_u32::<BigEndian>(path.len() as u32)?;
         buf.extend_from_slice(path.as_bytes());
@@ -857,13 +846,11 @@ impl SftpClient {
 
     pub fn open(
         &mut self,
-        filename: &str,
+        path: &str,
         desired_access: u32,
         flags: u32,
         attr: &SFTPAttributes,
     ) -> Result<SftpFile> {
-        let path = self._adjust_cwd(filename);
-
         let mut buf = Vec::new();
         buf.write_u32::<BigEndian>(path.len() as u32)?;
         buf.extend_from_slice(path.as_bytes());
@@ -913,8 +900,6 @@ impl SftpClient {
         control_byte: Option<u8>,
         compose_path: Option<&str>,
     ) -> Result<String> {
-        let path = self._adjust_cwd(path);
-
         let mut buf = Vec::new();
         buf.write_u32::<BigEndian>(path.len() as u32)?;
         buf.extend_from_slice(path.as_bytes());
@@ -940,8 +925,6 @@ impl SftpClient {
     }
 
     pub fn setstat(&mut self, path: &str, attr: &SFTPAttributes) -> Result<()> {
-        let path = self._adjust_cwd(path);
-
         let mut buf = Vec::new();
         buf.write_u32::<BigEndian>(path.len() as u32)?;
         buf.extend_from_slice(path.as_bytes());
@@ -956,8 +939,6 @@ impl SftpClient {
     }
 
     pub fn stat(&mut self, path: &str) -> Result<SFTPAttributes> {
-        let path = self._adjust_cwd(path);
-
         let mut buf = Vec::new();
         buf.write_u32::<BigEndian>(path.len() as u32)?;
         buf.extend_from_slice(path.as_bytes());
@@ -973,8 +954,6 @@ impl SftpClient {
     }
 
     pub fn remove(&mut self, path: &str) -> Result<()> {
-        let path = self._adjust_cwd(path);
-
         let mut buf = Vec::new();
         buf.write_u32::<BigEndian>(path.len() as u32)?;
         buf.extend_from_slice(path.as_bytes());
@@ -988,9 +967,6 @@ impl SftpClient {
     }
 
     pub fn rename(&mut self, oldpath: &str, newpath: &str, flags: u32) -> Result<()> {
-        let oldpath = self._adjust_cwd(oldpath);
-        let newpath = self._adjust_cwd(newpath);
-
         let mut buf = Vec::new();
         buf.write_u32::<BigEndian>(oldpath.len() as u32)?;
         buf.extend_from_slice(oldpath.as_bytes());
@@ -1007,8 +983,6 @@ impl SftpClient {
     }
 
     pub fn lstat(&mut self, path: &str) -> Result<SFTPAttributes> {
-        let path = self._adjust_cwd(path);
-
         let mut buf = Vec::new();
         buf.write_u32::<BigEndian>(path.len() as u32)?;
         buf.extend_from_slice(path.as_bytes());
@@ -1024,8 +998,6 @@ impl SftpClient {
     }
 
     pub fn opendir(&mut self, path: &str) -> Result<SftpDir> {
-        let path = self._adjust_cwd(path);
-
         let mut buf = Vec::new();
         buf.write_u32::<BigEndian>(path.len() as u32)?;
         buf.extend_from_slice(path.as_bytes());
@@ -1053,22 +1025,6 @@ impl SftpClient {
             SSH_FXP_STATUS => parse_ssh_fxp_status(respdata.as_slice()).map(|_| None),
             _ => panic!("Unexpected response: {}", respcmd),
         }
-    }
-
-    fn _adjust_cwd(&self, path: &str) -> String {
-        if self.cwd.is_none() {
-            return path.to_string();
-        }
-
-        if path.starts_with('/') {
-            return path.to_string();
-        }
-
-        if self.cwd == Some("/".to_owned()) {
-            return format!("/{}", path);
-        }
-
-        format!("{}/{}", self.cwd.as_ref().unwrap(), path)
     }
 
     pub fn block(
