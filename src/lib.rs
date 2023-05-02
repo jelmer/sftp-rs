@@ -60,6 +60,9 @@ type Result<R> = std::result::Result<R, Error>;
 pub trait Channel: Read + Write + AsRawFd + Send + Sync {}
 
 pub const SSH_FILEXFER_ATTR_SIZE: u32 = 0x00000001;
+// Note: SSH_FILEXFER_ATTR_UIDGID is deprecated in favor of SSH_FILEXFER_ATTR_OWNERGROUP, and not
+// included in the RFC
+pub const SSH_FILEXFER_ATTR_UIDGID: u32 = 0x00000002;
 pub const SSH_FILEXFER_ATTR_PERMISSIONS: u32 = 0x00000004;
 pub const SSH_FILEXFER_ATTR_ACCESSTIME: u32 = 0x00000008;
 pub const SSH_FILEXFER_ATTR_CREATETIME: u32 = 0x00000010;
@@ -76,10 +79,41 @@ pub const SSH_FILEXFER_ATTR_UNTRANSLATED_NAME: u32 = 0x00004000;
 pub const SSH_FILEXFER_ATTR_CTIME: u32 = 0x00008000;
 pub const SSH_FILEXFER_ATTR_EXTENDED: u32 = 0x80000000;
 
-pub const SSH_FILEXFER_ATTR_KNOWN_TEXT: u32 = 0x00;
-pub const SSH_FILEXFER_ATTR_GUESSED_TEXT: u32 = 0x01;
-pub const SSH_FILEXFER_ATTR_KNOWN_BINARY: u32 = 0x02;
-pub const SSH_FILEXFER_ATTR_GUESSED_BINARY: u32 = 0x03;
+const SSH_FILEXFER_ATTR_KNOWN_TEXT: u8 = 0x00;
+const SSH_FILEXFER_ATTR_GUESSED_TEXT: u8 = 0x01;
+const SSH_FILEXFER_ATTR_KNOWN_BINARY: u8 = 0x02;
+const SSH_FILEXFER_ATTR_GUESSED_BINARY: u8 = 0x03;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TextHint {
+    KnownText,
+    GuessedText,
+    KnownBinary,
+    GuessedBinary,
+}
+
+impl From<TextHint> for u8 {
+    fn from(hint: TextHint) -> Self {
+        match hint {
+            TextHint::KnownText => SSH_FILEXFER_ATTR_KNOWN_TEXT,
+            TextHint::GuessedText => SSH_FILEXFER_ATTR_GUESSED_TEXT,
+            TextHint::KnownBinary => SSH_FILEXFER_ATTR_KNOWN_BINARY,
+            TextHint::GuessedBinary => SSH_FILEXFER_ATTR_GUESSED_BINARY,
+        }
+    }
+}
+
+impl From<u8> for TextHint {
+    fn from(hint: u8) -> Self {
+        match hint {
+            SSH_FILEXFER_ATTR_KNOWN_TEXT => TextHint::KnownText,
+            SSH_FILEXFER_ATTR_GUESSED_TEXT => TextHint::GuessedText,
+            SSH_FILEXFER_ATTR_KNOWN_BINARY => TextHint::KnownBinary,
+            SSH_FILEXFER_ATTR_GUESSED_BINARY => TextHint::GuessedBinary,
+            _ => panic!("Invalid text hint"),
+        }
+    }
+}
 
 pub const SSH_FILEXFER_ATTR_FLAGS_READONLY: u32 = 0x00000001;
 pub const SSH_FILEXFER_ATTR_FLAGS_SYSTEM: u32 = 0x00000002;
@@ -151,7 +185,7 @@ impl From<u8> for Kind {
             SSH_FILEXFER_TYPE_CHAR_DEVICE => Kind::CharDevice,
             SSH_FILEXFER_TYPE_BLOCK_DEVICE => Kind::BlockDevice,
             SSH_FILEXFER_TYPE_FIFO => Kind::Fifo,
-            _ => panic!("Unknown file type"),
+            f => panic!("Unknown file type {}", f),
         }
     }
 }
@@ -175,6 +209,7 @@ const SSH_FXP_REALPATH: u8 = 16;
 const SSH_FXP_STAT: u8 = 17;
 const SSH_FXP_RENAME: u8 = 18;
 const SSH_FXP_READLINK: u8 = 19;
+const SSH_FXP_SYMLINK: u8 = 20;
 const SSH_FXP_LINK: u8 = 21;
 const SSH_FXP_BLOCK: u8 = 22;
 const SSH_FXP_UNBLOCK: u8 = 23;
@@ -219,6 +254,17 @@ const SSH_FX_OWNER_INVALID: u32 = 29;
 const SSH_FX_GROUP_INVALID: u32 = 30;
 const SSH_FX_NO_MATCHING_BYTE_RANGE_LOCK: u32 = 31;
 
+pub const SFTP_FLAG_READ: u32 = 0x00000001;
+pub const SFTP_FLAG_WRITE: u32 = 0x00000002;
+pub const SFTP_FLAG_APPEND: u32 = 0x00000004;
+pub const SFTP_FLAG_CREAT: u32 = 0x00000008;
+pub const SFTP_FLAG_TRUNC: u32 = 0x00000010;
+pub const SFTP_FLAG_EXCL: u32 = 0x00000020;
+
+pub const SSH_FXF_RENAME_OVERWRITE: u32 = 0x00000001;
+pub const SSH_FXF_RENAME_ATOMIC: u32 = 0x00000002;
+pub const SSH_FXF_RENAME_NATIVE: u32 = 0x00000004;
+
 pub const SSH_FXF_ACCESS_DISPOSITION: u32 = 0x00000007;
 pub const SSH_FXF_CREATE_NEW: u32 = 0x00000000;
 pub const SSH_FXF_CREATE_TRUNCATE: u32 = 0x00000001;
@@ -259,9 +305,10 @@ pub const ACE4_SYNCHRONIZE: u32 = 0x00100000;
 
 #[derive(Debug, PartialEq, Eq, Clone, Default)]
 pub struct Attributes {
-    pub kind: Kind,
-
     pub size: Option<u64>,
+
+    pub uid: Option<u32>,
+    pub gid: Option<u32>,
 
     pub allocation_size: Option<u64>,
     pub owner: Option<String>,
@@ -271,11 +318,11 @@ pub struct Attributes {
     pub create_time: Option<(u64, Option<u32>)>,
     pub modify_time: Option<(u64, Option<u32>)>,
     pub ctime: Option<(u64, Option<u32>)>,
-    // TODO(jelmer): Expand
+    // TODO(jelmer): Expand acl data
     pub acl: Option<Vec<u8>>,
     pub attrib_bits: Option<u32>,
     pub attrib_bits_valid: Option<u32>,
-    pub text_hint: Option<u8>,
+    pub text_hint: Option<TextHint>,
     pub mime_type: Option<String>,
     pub link_count: Option<u32>,
     pub untranslated_name: Option<Vec<u8>>,
@@ -283,9 +330,10 @@ pub struct Attributes {
 }
 
 impl Attributes {
-    pub fn new(kind: Kind) -> Self {
+    pub fn new() -> Self {
         Self {
-            kind,
+            uid: None,
+            gid: None,
             size: None,
             allocation_size: None,
             owner: None,
@@ -314,7 +362,8 @@ impl Attributes {
 
         writer.write_u32::<BigEndian>(valid_attribute_flags)?;
 
-        writer.write_u8(self.kind.into())?;
+        // The RFC specifies that there is a "file_type" byte here,
+        // but implementations don't seem to use it.
 
         if let Some(size) = self.size {
             writer.write_u64::<BigEndian>(size)?;
@@ -324,6 +373,19 @@ impl Attributes {
         if let Some(allocation_size) = self.allocation_size {
             writer.write_u64::<BigEndian>(allocation_size)?;
             valid_attribute_flags |= SSH_FILEXFER_ATTR_ALLOCATION_SIZE;
+        }
+
+        // The RFC doesn't document UIDGID, but implementations use it.
+        if let Some(uid) = self.uid {
+            writer.write_u32::<BigEndian>(uid)?;
+            valid_attribute_flags |= SSH_FILEXFER_ATTR_UIDGID;
+        }
+
+        if let Some(gid) = self.gid {
+            writer.write_u32::<BigEndian>(gid)?;
+            assert!(valid_attribute_flags & SSH_FILEXFER_ATTR_UIDGID != 0);
+        } else {
+            assert!(valid_attribute_flags & SSH_FILEXFER_ATTR_UIDGID == 0);
         }
 
         if let Some(owner) = self.owner.as_ref() {
@@ -402,7 +464,7 @@ impl Attributes {
         }
 
         if let Some(text_hint) = self.text_hint {
-            writer.write_u8(text_hint)?;
+            writer.write_u8(text_hint.into())?;
             valid_attribute_flags |= SSH_FILEXFER_ATTR_TEXT_HINT;
         }
 
@@ -443,12 +505,19 @@ impl Attributes {
     fn deserialize(reader: &mut Cursor<&[u8]>) -> std::io::Result<Self> {
         let valid_attribute_flags = reader.read_u32::<BigEndian>()?;
 
-        let kind = reader.read_u8()?;
-
         let size = if valid_attribute_flags & SSH_FILEXFER_ATTR_SIZE != 0 {
             Some(reader.read_u64::<BigEndian>()?)
         } else {
             None
+        };
+
+        let (uid, gid) = if valid_attribute_flags & SSH_FILEXFER_ATTR_UIDGID != 0 {
+            (
+                Some(reader.read_u32::<BigEndian>()?),
+                Some(reader.read_u32::<BigEndian>()?),
+            )
+        } else {
+            (None, None)
         };
 
         let allocation_size = if valid_attribute_flags & SSH_FILEXFER_ATTR_ALLOCATION_SIZE != 0 {
@@ -618,8 +687,9 @@ impl Attributes {
         };
 
         Ok(Self {
-            kind: kind.into(),
             size,
+            uid,
+            gid,
             allocation_size,
             owner,
             group,
@@ -631,7 +701,7 @@ impl Attributes {
             acl,
             attrib_bits,
             attrib_bits_valid,
-            text_hint,
+            text_hint: text_hint.map(|h| h.into()),
             mime_type,
             link_count,
             untranslated_name,
@@ -645,6 +715,35 @@ pub struct SftpClient {
     last_request_id: std::sync::atomic::AtomicU32,
     version: u32,
     extensions: Vec<(String, String)>,
+}
+
+fn parse_ssh_fxp_readdir(respdata: &[u8]) -> Result<Vec<(String, String, Attributes)>> {
+    let mut reader = std::io::Cursor::new(respdata);
+    let count = reader.read_u32::<BigEndian>()?;
+    let mut files = Vec::with_capacity(count as usize);
+    for _i in 0..count {
+        let filename_len = reader.read_u32::<BigEndian>()?;
+        let mut filename = vec![0; filename_len as usize];
+        reader.read_exact(&mut filename)?;
+        let filename = String::from_utf8(filename).map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Invalid filename: {}", e),
+            )
+        })?;
+        let longname_len = reader.read_u32::<BigEndian>()?;
+        let mut longname = vec![0; longname_len as usize];
+        reader.read_exact(&mut longname)?;
+        let longname = String::from_utf8(longname).map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Invalid longname: {}", e),
+            )
+        })?;
+        let attrs = Attributes::deserialize(&mut reader)?;
+        files.push((filename, longname, attrs));
+    }
+    Ok(files)
 }
 
 fn parse_ssh_fxp_name(respdata: &[u8]) -> Result<Vec<(String, Attributes)>> {
@@ -678,6 +777,14 @@ fn parse_ssh_fxp_data(respdata: &[u8]) -> Result<Vec<u8>> {
 fn parse_ssh_fxp_attrs(respdata: &[u8]) -> Result<Attributes> {
     let mut reader = std::io::Cursor::new(respdata);
     Attributes::deserialize(&mut reader).map_err(Error::Io)
+}
+
+fn parse_ssh_fxp_handle(respdata: &[u8]) -> Result<Vec<u8>> {
+    let mut reader = std::io::Cursor::new(respdata);
+    let handle_len = reader.read_u32::<BigEndian>()?;
+    let mut handle = vec![0u8; handle_len as usize];
+    reader.read_exact(&mut handle)?;
+    Ok(handle)
 }
 
 fn parse_ssh_fxp_status(respdata: &[u8]) -> Result<()> {
@@ -758,9 +865,11 @@ fn read_raw_packet(channel: &mut dyn Channel) -> std::io::Result<(u8, Vec<u8>)> 
 }
 
 fn write_raw_packet(channel: &mut dyn Channel, kind: u8, buf: &[u8]) -> std::io::Result<()> {
+    let mut channel = std::io::BufWriter::new(channel);
     channel.write_u32::<BigEndian>(buf.len() as u32 + 1)?;
     channel.write_u8(kind)?;
     channel.write_all(buf)?;
+    channel.flush()?;
     Ok(())
 }
 
@@ -872,14 +981,25 @@ impl SftpClient {
     }
 
     pub fn symlink(&self, path: &str, target: &str) -> Result<()> {
-        self.link(path, target, true)
+        let mut buf = Vec::new();
+        buf.write_u32::<BigEndian>(path.len() as u32)?;
+        buf.extend_from_slice(path.as_bytes());
+        buf.write_u32::<BigEndian>(target.len() as u32)?;
+        buf.extend_from_slice(target.as_bytes());
+
+        let (respcmd, respdata) = self.process(SSH_FXP_SYMLINK, buf.as_slice())?;
+
+        match respcmd {
+            SSH_FXP_STATUS => parse_ssh_fxp_status(respdata.as_slice()),
+            _ => panic!("Unexpected response: {}", respcmd),
+        }
     }
 
     pub fn hardlink(&self, path: &str, target: &str) -> Result<()> {
         self.link(path, target, false)
     }
 
-    fn link(&self, path: &str, target: &str, symlink: bool) -> Result<()> {
+    pub fn link(&self, path: &str, target: &str, symlink: bool) -> Result<()> {
         let mut buf = Vec::new();
         buf.write_u32::<BigEndian>(path.len() as u32)?;
         buf.extend_from_slice(path.as_bytes());
@@ -895,28 +1015,15 @@ impl SftpClient {
         }
     }
 
-    pub fn open(
-        &self,
-        path: &str,
-        desired_access: u32,
-        flags: u32,
-        attr: &Attributes,
-    ) -> Result<File> {
+    pub fn open(&self, path: &str, flags: u32, attr: &Attributes) -> Result<File> {
         let mut buf = Vec::new();
         buf.write_u32::<BigEndian>(path.len() as u32)?;
         buf.extend_from_slice(path.as_bytes());
-        buf.write_u32::<BigEndian>(desired_access)?;
         buf.write_u32::<BigEndian>(flags)?;
         buf.extend_from_slice(&attr.serialize()?);
         let (respcmd, respdata) = self.process(SSH_FXP_OPEN, buf.as_slice())?;
         match respcmd {
-            SSH_FXP_HANDLE => {
-                let mut reader = std::io::Cursor::new(respdata);
-                let handle_len = reader.read_u32::<BigEndian>()?;
-                let mut handle = vec![0u8; handle_len as usize];
-                reader.read_exact(&mut handle)?;
-                Ok(File(handle))
-            }
+            SSH_FXP_HANDLE => Ok(File(parse_ssh_fxp_handle(respdata.as_slice())?)),
             SSH_FXP_STATUS => parse_ssh_fxp_status(respdata.as_slice())
                 .map(|_| panic!("Unexpected status response")),
             _ => panic!("Unexpected response: {}", respcmd),
@@ -989,10 +1096,11 @@ impl SftpClient {
         }
     }
 
-    pub fn stat(&self, path: &str) -> Result<Attributes> {
+    pub fn stat(&self, path: &str, flags: Option<u32>) -> Result<Attributes> {
         let mut buf = Vec::new();
         buf.write_u32::<BigEndian>(path.len() as u32)?;
         buf.extend_from_slice(path.as_bytes());
+        buf.write_u32::<BigEndian>(flags.unwrap_or(0))?;
 
         let (respcmd, respdata) = self.process(SSH_FXP_STAT, buf.as_slice())?;
 
@@ -1017,13 +1125,17 @@ impl SftpClient {
         }
     }
 
-    pub fn rename(&self, oldpath: &str, newpath: &str, flags: u32) -> Result<()> {
+    pub fn rename(&self, oldpath: &str, newpath: &str, flags: Option<u32>) -> Result<()> {
         let mut buf = Vec::new();
         buf.write_u32::<BigEndian>(oldpath.len() as u32)?;
         buf.extend_from_slice(oldpath.as_bytes());
         buf.write_u32::<BigEndian>(newpath.len() as u32)?;
         buf.extend_from_slice(newpath.as_bytes());
-        buf.write_u32::<BigEndian>(flags)?;
+        buf.write_u32::<BigEndian>(
+            flags.unwrap_or(
+                SSH_FXF_RENAME_ATOMIC | SSH_FXF_RENAME_NATIVE | SSH_FXF_RENAME_OVERWRITE,
+            ),
+        )?;
 
         let (respcmd, respdata) = self.process(SSH_FXP_RENAME, buf.as_slice())?;
 
@@ -1033,10 +1145,11 @@ impl SftpClient {
         }
     }
 
-    pub fn lstat(&self, path: &str) -> Result<Attributes> {
+    pub fn lstat(&self, path: &str, flags: Option<u32>) -> Result<Attributes> {
         let mut buf = Vec::new();
         buf.write_u32::<BigEndian>(path.len() as u32)?;
         buf.extend_from_slice(path.as_bytes());
+        buf.write_u32::<BigEndian>(flags.unwrap_or(0))?;
 
         let (respcmd, respdata) = self.process(SSH_FXP_LSTAT, buf.as_slice())?;
 
@@ -1056,7 +1169,7 @@ impl SftpClient {
         let (respcmd, respdata) = self.process(SSH_FXP_OPENDIR, buf.as_slice())?;
 
         match respcmd {
-            SSH_FXP_HANDLE => Ok(Directory(respdata)),
+            SSH_FXP_HANDLE => Ok(Directory(parse_ssh_fxp_handle(respdata.as_slice())?)),
             SSH_FXP_STATUS => parse_ssh_fxp_status(respdata.as_slice())
                 .map(|_| panic!("Unexpected status response")),
             _ => panic!("Unexpected response: {}", respcmd),
@@ -1080,6 +1193,7 @@ impl SftpClient {
 
     pub fn block(&self, file: &File, offset: u64, length: u64, lockmask: u32) -> Result<()> {
         let mut buf = Vec::new();
+        buf.write_u32::<BigEndian>(file.0.len() as u32)?;
         buf.extend_from_slice(&file.0);
         buf.write_u64::<BigEndian>(offset)?;
         buf.write_u64::<BigEndian>(length)?;
@@ -1094,6 +1208,7 @@ impl SftpClient {
 
     pub fn unblock(&self, file: &File, offset: u64, length: u64) -> Result<()> {
         let mut buf = Vec::new();
+        buf.write_u32::<BigEndian>(file.0.len() as u32)?;
         buf.extend_from_slice(&file.0);
         buf.write_u64::<BigEndian>(offset)?;
         buf.write_u64::<BigEndian>(length)?;
@@ -1107,6 +1222,7 @@ impl SftpClient {
 
     pub fn fsetstat(&self, file: &File, attr: &Attributes) -> Result<()> {
         let mut buf = Vec::new();
+        buf.write_u32::<BigEndian>(file.0.len() as u32)?;
         buf.extend_from_slice(&file.0);
         buf.extend_from_slice(&attr.serialize()?);
 
@@ -1117,9 +1233,11 @@ impl SftpClient {
         }
     }
 
-    pub fn fstat(&self, file: &File) -> Result<Attributes> {
+    pub fn fstat(&self, file: &File, flags: Option<u32>) -> Result<Attributes> {
         let mut buf = Vec::new();
+        buf.write_u32::<BigEndian>(file.0.len() as u32)?;
         buf.extend_from_slice(&file.0);
+        buf.write_u32::<BigEndian>(flags.unwrap_or(0))?;
 
         let (respcmd, respdata) = self.process(SSH_FXP_FSTAT, buf.as_slice())?;
         match respcmd {
@@ -1132,6 +1250,7 @@ impl SftpClient {
 
     pub fn pwrite(&self, file: &File, offset: u64, data: &[u8]) -> Result<()> {
         let mut buf = Vec::new();
+        buf.write_u32::<BigEndian>(file.0.len() as u32)?;
         buf.extend_from_slice(&file.0);
         buf.write_u64::<BigEndian>(offset).unwrap();
         buf.write_u32::<BigEndian>(data.len() as u32).unwrap();
@@ -1147,6 +1266,7 @@ impl SftpClient {
 
     pub fn pread(&self, file: &File, offset: u64, length: u32) -> Result<Vec<u8>> {
         let mut buf = Vec::new();
+        buf.write_u32::<BigEndian>(file.0.len() as u32)?;
         buf.extend_from_slice(&file.0);
         buf.write_u64::<BigEndian>(offset).unwrap();
         buf.write_u32::<BigEndian>(length).unwrap();
@@ -1155,12 +1275,15 @@ impl SftpClient {
 
         match respcmd {
             SSH_FXP_DATA => parse_ssh_fxp_data(respdata.as_slice()),
+            SSH_FXP_STATUS => parse_ssh_fxp_status(respdata.as_slice())
+                .map(|_| panic!("Unexpected status response")),
             _ => panic!("Unexpected response: {}", respcmd),
         }
     }
 
     pub fn fclose(&self, file: &File) -> Result<()> {
         let mut buf = Vec::new();
+        buf.write_u32::<BigEndian>(file.0.len() as u32)?;
         buf.extend_from_slice(&file.0);
 
         let (respcmd, respdata) = self.process(SSH_FXP_CLOSE, buf.as_slice())?;
@@ -1172,6 +1295,7 @@ impl SftpClient {
 
     pub fn flineseek(&self, file: &File, lineno: u64) -> Result<()> {
         let mut buf = Vec::new();
+        buf.write_u32::<BigEndian>(file.0.len() as u32)?;
         buf.extend_from_slice(&file.0);
         buf.write_u64::<BigEndian>(lineno)?;
 
@@ -1181,6 +1305,7 @@ impl SftpClient {
 
     pub fn closedir(&self, dir: &Directory) -> Result<()> {
         let mut buf = Vec::new();
+        buf.write_u32::<BigEndian>(dir.0.len() as u32)?;
         buf.extend_from_slice(&dir.0);
 
         let (respcmd, respdata) = self.process(SSH_FXP_CLOSE, buf.as_slice())?;
@@ -1190,13 +1315,14 @@ impl SftpClient {
         }
     }
 
-    pub fn readdir(&self, dir: &Directory) -> Result<Vec<(String, Attributes)>> {
+    pub fn readdir(&self, dir: &Directory) -> Result<Vec<(String, String, Attributes)>> {
         let mut buf = Vec::new();
+        buf.write_u32::<BigEndian>(dir.0.len() as u32)?;
         buf.extend_from_slice(&dir.0);
 
         let (respcmd, respdata) = self.process(SSH_FXP_READDIR, buf.as_slice())?;
         match respcmd {
-            SSH_FXP_NAME => parse_ssh_fxp_name(respdata.as_slice()),
+            SSH_FXP_NAME => parse_ssh_fxp_readdir(respdata.as_slice()),
             SSH_FXP_STATUS => parse_ssh_fxp_status(respdata.as_slice())
                 .map(|_| panic!("Unexpected status response")),
             _ => panic!("Unexpected response: {}", respcmd),
@@ -1204,5 +1330,8 @@ impl SftpClient {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct File(Vec<u8>);
+
+#[derive(Debug, Clone)]
 pub struct Directory(Vec<u8>);

@@ -8,4 +8,7 @@ a SSH implementation, but will integrate with e.g. a command-line client running
 
 The basics of it work. However, it currently doesn't have any tests or much documentation.
 
+It mostly follows the published RFC for version 3, but deviates where other servers and clients
+ignore the RFC.
+
 RFC: https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#section-7.8
