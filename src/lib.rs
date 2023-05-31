@@ -1,7 +1,6 @@
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use std::io::Cursor;
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::os::unix::io::AsRawFd;
 use std::os::unix::io::FromRawFd;
 use std::sync::Mutex;
 
@@ -56,8 +55,6 @@ impl From<std::str::Utf8Error> for Error {
 }
 
 type Result<R> = std::result::Result<R, Error>;
-
-pub trait Channel: Read + Write + AsRawFd + Send + Sync {}
 
 pub const SSH_FILEXFER_ATTR_SIZE: u32 = 0x00000001;
 // Note: SSH_FILEXFER_ATTR_UIDGID is deprecated in favor of SSH_FILEXFER_ATTR_OWNERGROUP, and not
@@ -138,23 +135,18 @@ const SSH_FILEXFER_TYPE_CHAR_DEVICE: u8 = 7;
 const SSH_FILEXFER_TYPE_BLOCK_DEVICE: u8 = 8;
 const SSH_FILEXFER_TYPE_FIFO: u8 = 9;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Kind {
     Regular,
     Directory,
     Symlink,
     Special,
+    #[default]
     Unknown,
     Socket,
     CharDevice,
     BlockDevice,
     Fifo,
-}
-
-impl Default for Kind {
-    fn default() -> Self {
-        Kind::Unknown
-    }
 }
 
 impl From<Kind> for u8 {
@@ -710,8 +702,8 @@ impl Attributes {
     }
 }
 
-pub struct SftpClient {
-    channel: Mutex<Box<dyn Channel>>,
+pub struct SftpClient<C> {
+    channel: Mutex<C>,
     last_request_id: std::sync::atomic::AtomicU32,
     version: u32,
     extensions: Vec<(String, String)>,
@@ -849,9 +841,7 @@ fn parse_ssh_fxp_status(respdata: &[u8]) -> Result<()> {
 
 type RequestId = u32;
 
-impl Channel for std::fs::File {}
-
-fn read_raw_packet(channel: &mut dyn Channel) -> std::io::Result<(u8, Vec<u8>)> {
+fn read_raw_packet<C: Read + Write>(channel: &mut C) -> std::io::Result<(u8, Vec<u8>)> {
     let mut buf = [0u8; 4];
     channel.read_exact(&mut buf)?;
     let len = i32::from_be_bytes(buf);
@@ -864,7 +854,7 @@ fn read_raw_packet(channel: &mut dyn Channel) -> std::io::Result<(u8, Vec<u8>)> 
     Ok((kind, buf[1..].to_vec()))
 }
 
-fn write_raw_packet(channel: &mut dyn Channel, kind: u8, buf: &[u8]) -> std::io::Result<()> {
+fn write_raw_packet<C: Read + Write>(channel: &mut C, kind: u8, buf: &[u8]) -> std::io::Result<()> {
     let mut channel = std::io::BufWriter::new(channel);
     channel.write_u32::<BigEndian>(buf.len() as u32 + 1)?;
     channel.write_u8(kind)?;
@@ -873,7 +863,7 @@ fn write_raw_packet(channel: &mut dyn Channel, kind: u8, buf: &[u8]) -> std::io:
     Ok(())
 }
 
-fn initialize(channel: &mut dyn Channel) -> std::io::Result<(u32, Vec<(String, String)>)> {
+fn initialize<C: Read + Write>(channel: &mut C) -> std::io::Result<(u32, Vec<(String, String)>)> {
     let mut buf = Vec::new();
     buf.write_u32::<BigEndian>(3)?;
     write_raw_packet(channel, SSH_FXP_INIT, buf.as_slice())?;
@@ -909,9 +899,16 @@ fn initialize(channel: &mut dyn Channel) -> std::io::Result<(u32, Vec<(String, S
     Ok((version, extensions))
 }
 
-impl SftpClient {
-    pub fn new(mut channel: Box<dyn Channel>) -> std::io::Result<Self> {
-        let (version, extensions) = initialize(&mut *channel)?;
+impl<C> SftpClient<C> {
+    pub fn from_fd(fd: i32) -> std::io::Result<SftpClient<std::fs::File>> {
+        let file = unsafe { std::fs::File::from_raw_fd(fd) };
+        SftpClient::new(file)
+    }
+}
+
+impl<C: Read + Write> SftpClient<C> {
+    pub fn new(mut channel: C) -> std::io::Result<Self> {
+        let (version, extensions) = initialize(&mut channel)?;
         Ok(Self {
             channel: Mutex::new(channel),
             version,
@@ -926,11 +923,6 @@ impl SftpClient {
 
     pub fn version(&self) -> u32 {
         self.version
-    }
-
-    pub fn from_fd(fd: i32) -> std::io::Result<Self> {
-        let file = unsafe { std::fs::File::from_raw_fd(fd) };
-        Self::new(Box::new(file))
     }
 
     /// Create a new directory
@@ -1040,11 +1032,11 @@ impl SftpClient {
         buf.extend_from_slice(body);
 
         {
-            write_raw_packet(&mut **self.channel.lock().unwrap(), cmd, buf.as_slice())?;
+            write_raw_packet(&mut *self.channel.lock().unwrap(), cmd, buf.as_slice())?;
         }
 
         {
-            let (cmd, buf) = read_raw_packet(&mut **self.channel.lock().unwrap())?;
+            let (cmd, buf) = read_raw_packet(&mut *self.channel.lock().unwrap())?;
 
             assert!(buf[..4] == request_id.to_be_bytes());
 
