@@ -1011,7 +1011,7 @@ fn initialize<C: Read + Write>(channel: &mut C) -> std::io::Result<(u32, Vec<(St
     Ok((version, extensions))
 }
 
-impl<C> SftpClient<C> {
+impl<C: Read + Write> SftpClient<C> {
     pub fn from_fd(fd: i32) -> std::io::Result<SftpClient<std::fs::File>> {
         let file = unsafe { std::fs::File::from_raw_fd(fd) };
         SftpClient::new(file)
@@ -1439,3 +1439,15 @@ pub struct File(Vec<u8>);
 
 #[derive(Debug, Clone)]
 pub struct Directory(Vec<u8>);
+
+#[cfg(feature = "ssh2")]
+impl TryFrom<ssh2::Channel> for SftpClient<ssh2::Channel> {
+    type Error = std::io::Error;
+
+    fn try_from(mut channel: ssh2::Channel) -> std::result::Result<Self, Self::Error> {
+        channel
+            .subsystem("sftp")
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        SftpClient::new(channel)
+    }
+}
