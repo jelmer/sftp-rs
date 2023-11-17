@@ -12,3 +12,7 @@ homepage = "https://github.com/jelmer/sftp-rs"
 
 [dependencies]
 byteorder = "1"
+ssh2 = { version = "0.9", optional = true }
+
+[features]
+ssh2 = ["dep:ssh2"]
