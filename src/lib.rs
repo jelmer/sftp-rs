@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use std::io::Cursor;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -6,7 +7,10 @@ use std::sync::Mutex;
 
 #[derive(Debug)]
 pub enum Error {
+    /// An error occurred while reading or writing to the underlying stream.
     Io(std::io::Error),
+
+    /// An error occurred while parsing a UTF-8 string.
     Utf8(std::str::Utf8Error),
     Other(u32, String, String),
     Eof(String, String),
@@ -54,27 +58,63 @@ impl From<std::str::Utf8Error> for Error {
     }
 }
 
+impl From<Error> for std::io::Error {
+    fn from(err: Error) -> Self {
+        match err {
+            Error::Io(err) => err,
+            Error::Eof(_, _) => std::io::Error::new(std::io::ErrorKind::UnexpectedEof, ""),
+            Error::NoSuchFile(_, m) => std::io::Error::new(std::io::ErrorKind::NotFound, m),
+            Error::PermissionDenied(_, m) => {
+                std::io::Error::new(std::io::ErrorKind::PermissionDenied, m)
+            }
+            Error::NoConnection(_, m) => std::io::Error::new(std::io::ErrorKind::NotConnected, m),
+            Error::ConnectionLost(_, m) => {
+                std::io::Error::new(std::io::ErrorKind::ConnectionReset, m)
+            }
+            Error::InvalidHandle(_, m) => std::io::Error::new(std::io::ErrorKind::InvalidInput, m),
+            Error::NoSuchPath(_, m) => std::io::Error::new(std::io::ErrorKind::NotFound, m),
+            Error::FileAlreadyExists(_, m) => {
+                std::io::Error::new(std::io::ErrorKind::AlreadyExists, m)
+            }
+            Error::WriteProtect(_, m) => {
+                std::io::Error::new(std::io::ErrorKind::PermissionDenied, m)
+            }
+            Error::NoMedia(_, m) => std::io::Error::new(std::io::ErrorKind::NotFound, m),
+            Error::QuotaExceeded(_, m) => {
+                std::io::Error::new(std::io::ErrorKind::PermissionDenied, m)
+            }
+            Error::LockConflict(_, m) => {
+                std::io::Error::new(std::io::ErrorKind::PermissionDenied, m)
+            }
+            Error::InvalidFilename(_, m) => {
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, m)
+            }
+            _ => std::io::Error::new(std::io::ErrorKind::Other, format!("{:?}", err)),
+        }
+    }
+}
+
 type Result<R> = std::result::Result<R, Error>;
 
-pub const SSH_FILEXFER_ATTR_SIZE: u32 = 0x00000001;
+const SSH_FILEXFER_ATTR_SIZE: u32 = 0x00000001;
 // Note: SSH_FILEXFER_ATTR_UIDGID is deprecated in favor of SSH_FILEXFER_ATTR_OWNERGROUP, and not
 // included in the RFC
-pub const SSH_FILEXFER_ATTR_UIDGID: u32 = 0x00000002;
-pub const SSH_FILEXFER_ATTR_PERMISSIONS: u32 = 0x00000004;
-pub const SSH_FILEXFER_ATTR_ACCESSTIME: u32 = 0x00000008;
-pub const SSH_FILEXFER_ATTR_CREATETIME: u32 = 0x00000010;
-pub const SSH_FILEXFER_ATTR_MODIFYTIME: u32 = 0x00000020;
-pub const SSH_FILEXFER_ATTR_ACL: u32 = 0x00000040;
-pub const SSH_FILEXFER_ATTR_OWNERGROUP: u32 = 0x00000080;
-pub const SSH_FILEXFER_ATTR_SUBSECOND_TIMES: u32 = 0x00000100;
-pub const SSH_FILEXFER_ATTR_BITS: u32 = 0x00000200;
-pub const SSH_FILEXFER_ATTR_ALLOCATION_SIZE: u32 = 0x00000400;
-pub const SSH_FILEXFER_ATTR_TEXT_HINT: u32 = 0x00000800;
-pub const SSH_FILEXFER_ATTR_MIME_TYPE: u32 = 0x00001000;
-pub const SSH_FILEXFER_ATTR_LINK_COUNT: u32 = 0x00002000;
-pub const SSH_FILEXFER_ATTR_UNTRANSLATED_NAME: u32 = 0x00004000;
-pub const SSH_FILEXFER_ATTR_CTIME: u32 = 0x00008000;
-pub const SSH_FILEXFER_ATTR_EXTENDED: u32 = 0x80000000;
+const SSH_FILEXFER_ATTR_UIDGID: u32 = 0x00000002;
+const SSH_FILEXFER_ATTR_PERMISSIONS: u32 = 0x00000004;
+const SSH_FILEXFER_ATTR_ACCESSTIME: u32 = 0x00000008;
+const SSH_FILEXFER_ATTR_CREATETIME: u32 = 0x00000010;
+const SSH_FILEXFER_ATTR_MODIFYTIME: u32 = 0x00000020;
+const SSH_FILEXFER_ATTR_ACL: u32 = 0x00000040;
+const SSH_FILEXFER_ATTR_OWNERGROUP: u32 = 0x00000080;
+const SSH_FILEXFER_ATTR_SUBSECOND_TIMES: u32 = 0x00000100;
+const SSH_FILEXFER_ATTR_BITS: u32 = 0x00000200;
+const SSH_FILEXFER_ATTR_ALLOCATION_SIZE: u32 = 0x00000400;
+const SSH_FILEXFER_ATTR_TEXT_HINT: u32 = 0x00000800;
+const SSH_FILEXFER_ATTR_MIME_TYPE: u32 = 0x00001000;
+const SSH_FILEXFER_ATTR_LINK_COUNT: u32 = 0x00002000;
+const SSH_FILEXFER_ATTR_UNTRANSLATED_NAME: u32 = 0x00004000;
+const SSH_FILEXFER_ATTR_CTIME: u32 = 0x00008000;
+const SSH_FILEXFER_ATTR_EXTENDED: u32 = 0x80000000;
 
 const SSH_FILEXFER_ATTR_KNOWN_TEXT: u8 = 0x00;
 const SSH_FILEXFER_ATTR_GUESSED_TEXT: u8 = 0x01;
@@ -112,18 +152,18 @@ impl From<u8> for TextHint {
     }
 }
 
-pub const SSH_FILEXFER_ATTR_FLAGS_READONLY: u32 = 0x00000001;
-pub const SSH_FILEXFER_ATTR_FLAGS_SYSTEM: u32 = 0x00000002;
-pub const SSH_FILEXFER_ATTR_FLAGS_HIDDEN: u32 = 0x00000004;
-pub const SSH_FILEXFER_ATTR_FLAGS_CASE_INSENSITIVE: u32 = 0x00000008;
-pub const SSH_FILEXFER_ATTR_FLAGS_ARCHIVE: u32 = 0x00000010;
-pub const SSH_FILEXFER_ATTR_FLAGS_ENCRYPTED: u32 = 0x00000020;
-pub const SSH_FILEXFER_ATTR_FLAGS_COMPRESSED: u32 = 0x00000040;
-pub const SSH_FILEXFER_ATTR_FLAGS_SPARSE: u32 = 0x00000080;
-pub const SSH_FILEXFER_ATTR_FLAGS_APPEND_ONLY: u32 = 0x00000100;
-pub const SSH_FILEXFER_ATTR_FLAGS_IMMUTABLE: u32 = 0x00000200;
-pub const SSH_FILEXFER_ATTR_FLAGS_SYNC: u32 = 0x00000400;
-pub const SSH_FILEXFER_ATTR_FLAGS_TRANSLATION_ERR: u32 = 0x00000800;
+const SSH_FILEXFER_ATTR_FLAGS_READONLY: u32 = 0x00000001;
+const SSH_FILEXFER_ATTR_FLAGS_SYSTEM: u32 = 0x00000002;
+const SSH_FILEXFER_ATTR_FLAGS_HIDDEN: u32 = 0x00000004;
+const SSH_FILEXFER_ATTR_FLAGS_CASE_INSENSITIVE: u32 = 0x00000008;
+const SSH_FILEXFER_ATTR_FLAGS_ARCHIVE: u32 = 0x00000010;
+const SSH_FILEXFER_ATTR_FLAGS_ENCRYPTED: u32 = 0x00000020;
+const SSH_FILEXFER_ATTR_FLAGS_COMPRESSED: u32 = 0x00000040;
+const SSH_FILEXFER_ATTR_FLAGS_SPARSE: u32 = 0x00000080;
+const SSH_FILEXFER_ATTR_FLAGS_APPEND_ONLY: u32 = 0x00000100;
+const SSH_FILEXFER_ATTR_FLAGS_IMMUTABLE: u32 = 0x00000200;
+const SSH_FILEXFER_ATTR_FLAGS_SYNC: u32 = 0x00000400;
+const SSH_FILEXFER_ATTR_FLAGS_TRANSLATION_ERR: u32 = 0x00000800;
 
 const SSH_FILEXFER_TYPE_REGULAR: u8 = 1;
 const SSH_FILEXFER_TYPE_DIRECTORY: u8 = 2;
@@ -246,54 +286,126 @@ const SSH_FX_OWNER_INVALID: u32 = 29;
 const SSH_FX_GROUP_INVALID: u32 = 30;
 const SSH_FX_NO_MATCHING_BYTE_RANGE_LOCK: u32 = 31;
 
-pub const SFTP_FLAG_READ: u32 = 0x00000001;
-pub const SFTP_FLAG_WRITE: u32 = 0x00000002;
-pub const SFTP_FLAG_APPEND: u32 = 0x00000004;
-pub const SFTP_FLAG_CREAT: u32 = 0x00000008;
-pub const SFTP_FLAG_TRUNC: u32 = 0x00000010;
-pub const SFTP_FLAG_EXCL: u32 = 0x00000020;
+const SFTP_FLAG_READ: u32 = 0x00000001;
+const SFTP_FLAG_WRITE: u32 = 0x00000002;
+const SFTP_FLAG_APPEND: u32 = 0x00000004;
+const SFTP_FLAG_CREAT: u32 = 0x00000008;
+const SFTP_FLAG_TRUNC: u32 = 0x00000010;
+const SFTP_FLAG_EXCL: u32 = 0x00000020;
 
-pub const SSH_FXF_RENAME_OVERWRITE: u32 = 0x00000001;
-pub const SSH_FXF_RENAME_ATOMIC: u32 = 0x00000002;
-pub const SSH_FXF_RENAME_NATIVE: u32 = 0x00000004;
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub struct OpenOptions(u32);
 
-pub const SSH_FXF_ACCESS_DISPOSITION: u32 = 0x00000007;
-pub const SSH_FXF_CREATE_NEW: u32 = 0x00000000;
-pub const SSH_FXF_CREATE_TRUNCATE: u32 = 0x00000001;
-pub const SSH_FXF_OPEN_EXISTING: u32 = 0x00000002;
-pub const SSH_FXF_OPEN_OR_CREATE: u32 = 0x00000003;
-pub const SSH_FXF_TRUNCATE_EXISTING: u32 = 0x00000004;
-pub const SSH_FXF_APPEND_DATA: u32 = 0x00000008;
-pub const SSH_FXF_APPEND_DATA_ATOMIC: u32 = 0x00000010;
-pub const SSH_FXF_TEXT_MODE: u32 = 0x00000020;
-pub const SSH_FXF_BLOCK_READ: u32 = 0x00000040;
-pub const SSH_FXF_BLOCK_WRITE: u32 = 0x00000080;
-pub const SSH_FXF_BLOCK_DELETE: u32 = 0x00000100;
-pub const SSH_FXF_BLOCK_ADVISORY: u32 = 0x00000200;
-pub const SSH_FXF_NOFOLLOW: u32 = 0x00000400;
-pub const SSH_FXF_DELETE_ON_CLOSE: u32 = 0x00000800;
-pub const SSH_FXF_ACCESS_AUDIT_ALARM_INFO: u32 = 0x00001000;
-pub const SSH_FXF_ACCESS_BACKUP: u32 = 0x00002000;
-pub const SSH_FXF_BACKUP_STREAM: u32 = 0x00004000;
-pub const SSH_FXF_OVERRIDE_OWNER: u32 = 0x00008000;
+impl OpenOptions {
+    pub fn new() -> OpenOptions {
+        OpenOptions(0)
+    }
 
-pub const ACE4_READ_DATA: u32 = 0x00000001;
-pub const ACE4_LIST_DIRECTORY: u32 = 0x00000001;
-pub const ACE4_WRITE_DATA: u32 = 0x00000002;
-pub const ACE4_ADD_FILE: u32 = 0x00000002;
-pub const ACE4_APPEND_DATA: u32 = 0x00000004;
-pub const ACE4_ADD_SUBDIRECTORY: u32 = 0x00000004;
-pub const ACE4_READ_NAMED_ATTRS: u32 = 0x00000008;
-pub const ACE4_WRITE_NAMED_ATTRS: u32 = 0x00000010;
-pub const ACE4_EXECUTE: u32 = 0x00000020;
-pub const ACE4_DELETE_CHILD: u32 = 0x00000040;
-pub const ACE4_READ_ATTRIBUTES: u32 = 0x00000080;
-pub const ACE4_WRITE_ATTRIBUTES: u32 = 0x00000100;
-pub const ACE4_DELETE: u32 = 0x00010000;
-pub const ACE4_READ_ACL: u32 = 0x00020000;
-pub const ACE4_WRITE_ACL: u32 = 0x00040000;
-pub const ACE4_WRITE_OWNER: u32 = 0x00080000;
-pub const ACE4_SYNCHRONIZE: u32 = 0x00100000;
+    pub fn read(mut self, read: bool) -> OpenOptions {
+        if read {
+            self.0 |= SFTP_FLAG_READ;
+        } else {
+            self.0 &= !SFTP_FLAG_READ;
+        }
+        self
+    }
+
+    pub fn write(mut self, write: bool) -> OpenOptions {
+        if write {
+            self.0 |= SFTP_FLAG_WRITE;
+        } else {
+            self.0 &= !SFTP_FLAG_WRITE;
+        }
+        self
+    }
+
+    pub fn append(mut self, append: bool) -> OpenOptions {
+        if append {
+            self.0 |= SFTP_FLAG_APPEND;
+        } else {
+            self.0 &= !SFTP_FLAG_APPEND;
+        }
+        self
+    }
+
+    pub fn create(mut self, create: bool) -> OpenOptions {
+        if create {
+            self.0 |= SFTP_FLAG_CREAT;
+        } else {
+            self.0 &= !SFTP_FLAG_CREAT;
+        }
+        self
+    }
+
+    pub fn truncate(mut self, truncate: bool) -> OpenOptions {
+        if truncate {
+            self.0 |= SFTP_FLAG_TRUNC;
+        } else {
+            self.0 &= !SFTP_FLAG_TRUNC;
+        }
+        self
+    }
+
+    pub fn excl(mut self, excl: bool) -> OpenOptions {
+        if excl {
+            self.0 |= SFTP_FLAG_EXCL;
+        } else {
+            self.0 &= !SFTP_FLAG_EXCL;
+        }
+        self
+    }
+
+    pub fn mode(&mut self, mode: u32) -> &mut OpenOptions {
+        self.0 |= mode;
+        self
+    }
+
+    pub fn get(&self) -> u32 {
+        self.0
+    }
+}
+
+const SSH_FXF_RENAME_OVERWRITE: u32 = 0x00000001;
+const SSH_FXF_RENAME_ATOMIC: u32 = 0x00000002;
+const SSH_FXF_RENAME_NATIVE: u32 = 0x00000004;
+
+const SSH_FXF_ACCESS_DISPOSITION: u32 = 0x00000007;
+const SSH_FXF_CREATE_NEW: u32 = 0x00000000;
+const SSH_FXF_CREATE_TRUNCATE: u32 = 0x00000001;
+const SSH_FXF_OPEN_EXISTING: u32 = 0x00000002;
+const SSH_FXF_OPEN_OR_CREATE: u32 = 0x00000003;
+const SSH_FXF_TRUNCATE_EXISTING: u32 = 0x00000004;
+const SSH_FXF_APPEND_DATA: u32 = 0x00000008;
+const SSH_FXF_APPEND_DATA_ATOMIC: u32 = 0x00000010;
+const SSH_FXF_TEXT_MODE: u32 = 0x00000020;
+const SSH_FXF_BLOCK_READ: u32 = 0x00000040;
+const SSH_FXF_BLOCK_WRITE: u32 = 0x00000080;
+const SSH_FXF_BLOCK_DELETE: u32 = 0x00000100;
+const SSH_FXF_BLOCK_ADVISORY: u32 = 0x00000200;
+const SSH_FXF_NOFOLLOW: u32 = 0x00000400;
+const SSH_FXF_DELETE_ON_CLOSE: u32 = 0x00000800;
+const SSH_FXF_ACCESS_AUDIT_ALARM_INFO: u32 = 0x00001000;
+const SSH_FXF_ACCESS_BACKUP: u32 = 0x00002000;
+const SSH_FXF_BACKUP_STREAM: u32 = 0x00004000;
+const SSH_FXF_OVERRIDE_OWNER: u32 = 0x00008000;
+
+const ACE4_READ_DATA: u32 = 0x00000001;
+const ACE4_LIST_DIRECTORY: u32 = 0x00000001;
+const ACE4_WRITE_DATA: u32 = 0x00000002;
+const ACE4_ADD_FILE: u32 = 0x00000002;
+const ACE4_APPEND_DATA: u32 = 0x00000004;
+const ACE4_ADD_SUBDIRECTORY: u32 = 0x00000004;
+const ACE4_READ_NAMED_ATTRS: u32 = 0x00000008;
+const ACE4_WRITE_NAMED_ATTRS: u32 = 0x00000010;
+const ACE4_EXECUTE: u32 = 0x00000020;
+const ACE4_DELETE_CHILD: u32 = 0x00000040;
+const ACE4_READ_ATTRIBUTES: u32 = 0x00000080;
+const ACE4_WRITE_ATTRIBUTES: u32 = 0x00000100;
+const ACE4_DELETE: u32 = 0x00010000;
+const ACE4_READ_ACL: u32 = 0x00020000;
+const ACE4_WRITE_ACL: u32 = 0x00040000;
+const ACE4_WRITE_OWNER: u32 = 0x00080000;
+const ACE4_SYNCHRONIZE: u32 = 0x00100000;
 
 #[derive(Debug, PartialEq, Eq, Clone, Default)]
 pub struct Attributes {
@@ -1007,11 +1119,11 @@ impl<C: Read + Write> SftpClient<C> {
         }
     }
 
-    pub fn open(&self, path: &str, flags: u32, attr: &Attributes) -> Result<File> {
+    pub fn open(&self, path: &str, options: OpenOptions, attr: &Attributes) -> Result<File> {
         let mut buf = Vec::new();
         buf.write_u32::<BigEndian>(path.len() as u32)?;
         buf.extend_from_slice(path.as_bytes());
-        buf.write_u32::<BigEndian>(flags)?;
+        buf.write_u32::<BigEndian>(options.get())?;
         buf.extend_from_slice(&attr.serialize()?);
         let (respcmd, respdata) = self.process(SSH_FXP_OPEN, buf.as_slice())?;
         match respcmd {
