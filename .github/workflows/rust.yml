@@ -16,5 +16,9 @@ jobs:
     - uses: actions/checkout@v4
     - name: Build
       run: cargo build --verbose
+      env:
+        RUSTFLAGS: -Dwarnings
     - name: Run tests
       run: cargo test --verbose
+      env:
+        RUSTFLAGS: -Dwarnings
