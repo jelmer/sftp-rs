@@ -2,7 +2,10 @@
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use std::io::Cursor;
 use std::io::{Read, Seek, SeekFrom, Write};
+#[cfg(unix)]
 use std::os::unix::io::FromRawFd;
+#[cfg(windows)]
+use std::os::windows::io::{FromRawHandle, RawHandle};
 use std::sync::Mutex;
 
 #[derive(Debug)]
@@ -1012,8 +1015,15 @@ fn initialize<C: Read + Write>(channel: &mut C) -> std::io::Result<(u32, Vec<(St
 }
 
 impl<C: Read + Write> SftpClient<C> {
+    #[cfg(unix)]
     pub fn from_fd(fd: i32) -> std::io::Result<SftpClient<std::fs::File>> {
         let file = unsafe { std::fs::File::from_raw_fd(fd) };
+        SftpClient::new(file)
+    }
+
+    #[cfg(windows)]
+    pub fn from_handle(handle: RawHandle) -> std::io::Result<SftpClient<std::fs::File>> {
+        let file = unsafe { std::fs::File::from_raw_handle(handle) };
         SftpClient::new(file)
     }
 }
