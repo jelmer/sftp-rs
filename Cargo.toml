@@ -10,9 +10,17 @@ homepage = "https://github.com/jelmer/sftp-rs"
 
 [lib]
 
+[[bin]]
+name = "sftp"
+required-features = ["bin"]
+
 [dependencies]
 byteorder = "1"
+rustyline = { version = "18", optional = true }
+shell-words = { version = "1", optional = true }
 ssh2 = { version = "0.9", optional = true }
 
 [features]
+default = ["bin"]
+bin = ["dep:rustyline", "dep:shell-words"]
 ssh2 = ["dep:ssh2"]
