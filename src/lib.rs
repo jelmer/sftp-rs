@@ -4,6 +4,9 @@ pub mod sync;
 #[cfg(feature = "async")]
 pub mod r#async;
 
+#[cfg(feature = "russh")]
+pub mod russh;
+
 pub use protocol::{
     Attributes, Directory, Error, File, Kind, OpenOptions, Result, TextHint,
     SSH_FILEXFER_ATTR_ACCESSTIME, SSH_FILEXFER_ATTR_ACL, SSH_FILEXFER_ATTR_ALLOCATION_SIZE,
