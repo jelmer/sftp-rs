@@ -425,10 +425,6 @@ impl Attributes {
             writer.write_u64::<BigEndian>(size)?;
             valid_attribute_flags |= SSH_FILEXFER_ATTR_SIZE;
         }
-        if let Some(allocation_size) = self.allocation_size {
-            writer.write_u64::<BigEndian>(allocation_size)?;
-            valid_attribute_flags |= SSH_FILEXFER_ATTR_ALLOCATION_SIZE;
-        }
         if let Some(uid) = self.uid {
             writer.write_u32::<BigEndian>(uid)?;
             valid_attribute_flags |= SSH_FILEXFER_ATTR_UIDGID;
@@ -438,6 +434,10 @@ impl Attributes {
             assert!(valid_attribute_flags & SSH_FILEXFER_ATTR_UIDGID != 0);
         } else {
             assert!(valid_attribute_flags & SSH_FILEXFER_ATTR_UIDGID == 0);
+        }
+        if let Some(allocation_size) = self.allocation_size {
+            writer.write_u64::<BigEndian>(allocation_size)?;
+            valid_attribute_flags |= SSH_FILEXFER_ATTR_ALLOCATION_SIZE;
         }
         if let Some(owner) = self.owner.as_ref() {
             writer.write_u32::<BigEndian>(owner.len() as u32)?;
@@ -971,6 +971,18 @@ fn unexpected(cmd: u8) -> Error {
     )))
 }
 
+/// Interpret an SSH_FXP_STATUS reply received in place of a data-bearing response.
+/// Any non-OK status becomes its matching Error; SSH_FX_OK is itself a protocol
+/// violation (the server should have sent the requested handle/attrs/data/name).
+fn status_as_error(data: &[u8]) -> Error {
+    match parse_status(data) {
+        Ok(()) => Error::Io(std::io::Error::other(
+            "Server returned SSH_FX_OK where a data-bearing response was expected",
+        )),
+        Err(e) => e,
+    }
+}
+
 pub fn expect_status(cmd: u8, data: &[u8]) -> Result<()> {
     match cmd {
         SSH_FXP_STATUS => parse_status(data),
@@ -981,7 +993,7 @@ pub fn expect_status(cmd: u8, data: &[u8]) -> Result<()> {
 pub fn expect_handle(cmd: u8, data: &[u8]) -> Result<Vec<u8>> {
     match cmd {
         SSH_FXP_HANDLE => parse_handle(data),
-        SSH_FXP_STATUS => parse_status(data).map(|_| unreachable!("OK status in handle position")),
+        SSH_FXP_STATUS => Err(status_as_error(data)),
         _ => Err(unexpected(cmd)),
     }
 }
@@ -989,7 +1001,7 @@ pub fn expect_handle(cmd: u8, data: &[u8]) -> Result<Vec<u8>> {
 pub fn expect_attrs(cmd: u8, data: &[u8]) -> Result<Attributes> {
     match cmd {
         SSH_FXP_ATTRS => parse_attrs(data),
-        SSH_FXP_STATUS => parse_status(data).map(|_| unreachable!()),
+        SSH_FXP_STATUS => Err(status_as_error(data)),
         _ => Err(unexpected(cmd)),
     }
 }
@@ -997,7 +1009,7 @@ pub fn expect_attrs(cmd: u8, data: &[u8]) -> Result<Attributes> {
 pub fn expect_data(cmd: u8, data: &[u8]) -> Result<Vec<u8>> {
     match cmd {
         SSH_FXP_DATA => parse_data(data),
-        SSH_FXP_STATUS => parse_status(data).map(|_| unreachable!()),
+        SSH_FXP_STATUS => Err(status_as_error(data)),
         _ => Err(unexpected(cmd)),
     }
 }
@@ -1005,7 +1017,7 @@ pub fn expect_data(cmd: u8, data: &[u8]) -> Result<Vec<u8>> {
 pub fn expect_name(cmd: u8, data: &[u8]) -> Result<Vec<(String, Attributes)>> {
     match cmd {
         SSH_FXP_NAME => parse_name(data),
-        SSH_FXP_STATUS => parse_status(data).map(|_| unreachable!()),
+        SSH_FXP_STATUS => Err(status_as_error(data)),
         _ => Err(unexpected(cmd)),
     }
 }
@@ -1013,7 +1025,7 @@ pub fn expect_name(cmd: u8, data: &[u8]) -> Result<Vec<(String, Attributes)>> {
 pub fn expect_readdir(cmd: u8, data: &[u8]) -> Result<Vec<(String, String, Attributes)>> {
     match cmd {
         SSH_FXP_NAME => parse_readdir(data),
-        SSH_FXP_STATUS => parse_status(data).map(|_| unreachable!()),
+        SSH_FXP_STATUS => Err(status_as_error(data)),
         _ => Err(unexpected(cmd)),
     }
 }
@@ -1131,6 +1143,459 @@ mod tests {
         match parse_status(&buf) {
             Err(Error::Eof(m, _)) => assert_eq!(m, "end"),
             other => panic!("expected Eof, got {:?}", other),
+        }
+    }
+
+    fn status_payload(code: u32) -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&code.to_be_bytes());
+        buf.extend_from_slice(&0u32.to_be_bytes());
+        buf.extend_from_slice(&0u32.to_be_bytes());
+        buf
+    }
+
+    #[test]
+    fn expect_handle_passes_through_status_error() {
+        let payload = status_payload(SSH_FX_NO_SUCH_FILE);
+        match expect_handle(SSH_FXP_STATUS, &payload) {
+            Err(Error::NoSuchFile(_, _)) => {}
+            other => panic!("expected NoSuchFile, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn expect_handle_rejects_ok_status_without_panic() {
+        let payload = status_payload(SSH_FX_OK);
+        match expect_handle(SSH_FXP_STATUS, &payload) {
+            Err(Error::Io(e)) => {
+                assert!(
+                    e.to_string().contains("SSH_FX_OK"),
+                    "unexpected message: {}",
+                    e
+                );
+            }
+            other => panic!("expected Io error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn expect_attrs_rejects_ok_status_without_panic() {
+        let payload = status_payload(SSH_FX_OK);
+        assert!(matches!(
+            expect_attrs(SSH_FXP_STATUS, &payload),
+            Err(Error::Io(_))
+        ));
+    }
+
+    #[test]
+    fn expect_data_rejects_ok_status_without_panic() {
+        let payload = status_payload(SSH_FX_OK);
+        assert!(matches!(
+            expect_data(SSH_FXP_STATUS, &payload),
+            Err(Error::Io(_))
+        ));
+    }
+
+    #[test]
+    fn expect_name_rejects_ok_status_without_panic() {
+        let payload = status_payload(SSH_FX_OK);
+        assert!(matches!(
+            expect_name(SSH_FXP_STATUS, &payload),
+            Err(Error::Io(_))
+        ));
+    }
+
+    #[test]
+    fn expect_readdir_rejects_ok_status_without_panic() {
+        let payload = status_payload(SSH_FX_OK);
+        assert!(matches!(
+            expect_readdir(SSH_FXP_STATUS, &payload),
+            Err(Error::Io(_))
+        ));
+    }
+
+    #[test]
+    fn expect_handle_rejects_unexpected_cmd() {
+        assert!(matches!(
+            expect_handle(SSH_FXP_DATA, &[]),
+            Err(Error::Io(_))
+        ));
+    }
+
+    fn roundtrip_attrs(a: &Attributes) {
+        let bytes = a.serialize().unwrap();
+        let mut cursor = Cursor::new(bytes.as_slice());
+        let b = Attributes::deserialize(&mut cursor).unwrap();
+        assert_eq!(*a, b);
+    }
+
+    #[test]
+    fn attributes_roundtrip_empty() {
+        roundtrip_attrs(&Attributes::new());
+    }
+
+    #[test]
+    fn attributes_roundtrip_ownergroup() {
+        let mut a = Attributes::new();
+        a.owner = Some("alice".into());
+        a.group = Some("staff".into());
+        roundtrip_attrs(&a);
+    }
+
+    #[test]
+    fn attributes_roundtrip_allocation_size() {
+        let mut a = Attributes::new();
+        a.allocation_size = Some(4096);
+        roundtrip_attrs(&a);
+    }
+
+    #[test]
+    fn attributes_roundtrip_times_seconds_only() {
+        let mut a = Attributes::new();
+        a.access_time = Some((1_700_000_000, None));
+        a.modify_time = Some((1_700_000_001, None));
+        a.ctime = Some((1_700_000_002, None));
+        a.create_time = Some((1_700_000_003, None));
+        roundtrip_attrs(&a);
+    }
+
+    #[test]
+    fn attributes_roundtrip_times_with_subseconds() {
+        let mut a = Attributes::new();
+        // Subseconds on access_time turns the SUBSECOND_TIMES flag on, so every
+        // other timestamp in this message must also carry nanoseconds.
+        a.access_time = Some((1_700_000_000, Some(100)));
+        a.modify_time = Some((1_700_000_001, Some(200)));
+        a.ctime = Some((1_700_000_002, Some(300)));
+        a.create_time = Some((1_700_000_003, Some(400)));
+        roundtrip_attrs(&a);
+    }
+
+    #[test]
+    fn attributes_roundtrip_bits() {
+        let mut a = Attributes::new();
+        a.attrib_bits = Some(SSH_FILEXFER_ATTR_FLAGS_READONLY);
+        a.attrib_bits_valid = Some(SSH_FILEXFER_ATTR_FLAGS_READONLY);
+        roundtrip_attrs(&a);
+    }
+
+    #[test]
+    fn attributes_roundtrip_text_and_mime() {
+        let mut a = Attributes::new();
+        a.text_hint = Some(TextHint::KnownBinary);
+        a.mime_type = Some("application/octet-stream".into());
+        roundtrip_attrs(&a);
+    }
+
+    #[test]
+    fn attributes_roundtrip_link_count_untranslated() {
+        let mut a = Attributes::new();
+        a.link_count = Some(3);
+        a.untranslated_name = Some(vec![0xff, 0x00, 0x7f]);
+        roundtrip_attrs(&a);
+    }
+
+    #[test]
+    fn attributes_roundtrip_acl() {
+        let mut a = Attributes::new();
+        a.acl = Some(vec![1, 2, 3, 4, 5]);
+        roundtrip_attrs(&a);
+    }
+
+    #[test]
+    fn attributes_roundtrip_extended() {
+        let mut a = Attributes::new();
+        a.extended = Some(vec![
+            ("vendor@example".into(), "value-1".into()),
+            ("other".into(), "value-2".into()),
+        ]);
+        roundtrip_attrs(&a);
+    }
+
+    #[test]
+    fn attributes_roundtrip_all_fields() {
+        let mut a = Attributes::new();
+        a.size = Some(9_999_999);
+        a.uid = Some(501);
+        a.gid = Some(20);
+        a.allocation_size = Some(12_288);
+        a.owner = Some("alice".into());
+        a.group = Some("staff".into());
+        a.permissions = Some(0o100755);
+        a.access_time = Some((1_700_000_000, Some(1)));
+        a.modify_time = Some((1_700_000_001, Some(2)));
+        a.ctime = Some((1_700_000_002, Some(3)));
+        a.create_time = Some((1_700_000_003, Some(4)));
+        a.acl = Some(vec![7, 8, 9]);
+        a.attrib_bits = Some(SSH_FILEXFER_ATTR_FLAGS_ARCHIVE);
+        a.attrib_bits_valid = Some(SSH_FILEXFER_ATTR_FLAGS_ARCHIVE);
+        a.text_hint = Some(TextHint::GuessedText);
+        a.mime_type = Some("text/plain".into());
+        a.link_count = Some(1);
+        a.untranslated_name = Some(b"raw-name".to_vec());
+        a.extended = Some(vec![("x".into(), "y".into())]);
+        roundtrip_attrs(&a);
+    }
+
+    #[test]
+    fn build_handle_only_layout() {
+        let body = build_handle_only(&[0xaa, 0xbb]);
+        assert_eq!(body, vec![0x00, 0x00, 0x00, 0x02, 0xaa, 0xbb]);
+    }
+
+    #[test]
+    fn build_path_and_flags_layout() {
+        let body = build_path_and_flags("f", 0x11223344);
+        assert_eq!(body, vec![0, 0, 0, 1, b'f', 0x11, 0x22, 0x33, 0x44]);
+    }
+
+    #[test]
+    fn build_handle_and_flags_layout() {
+        let body = build_handle_and_flags(&[0xa], 0xdeadbeef);
+        assert_eq!(body, vec![0, 0, 0, 1, 0xa, 0xde, 0xad, 0xbe, 0xef]);
+    }
+
+    #[test]
+    fn build_link_sets_flag_byte() {
+        assert_eq!(build_link("a", "b", true).last().copied(), Some(1));
+        assert_eq!(build_link("a", "b", false).last().copied(), Some(0));
+    }
+
+    #[test]
+    fn build_realpath_optional_fields() {
+        let body = build_realpath("p", None, None);
+        assert_eq!(body, vec![0, 0, 0, 1, b'p']);
+
+        let body = build_realpath("p", Some(0x5), None);
+        assert_eq!(body, vec![0, 0, 0, 1, b'p', 0x5]);
+
+        let body = build_realpath("p", Some(0x5), Some("q"));
+        assert_eq!(body, vec![0, 0, 0, 1, b'p', 0x5, 0, 0, 0, 1, b'q']);
+    }
+
+    #[test]
+    fn build_rename_default_flags() {
+        let body = build_rename("a", "b", None);
+        // Last 4 bytes are the flags: ATOMIC | NATIVE | OVERWRITE = 7.
+        let tail = &body[body.len() - 4..];
+        let flags = u32::from_be_bytes([tail[0], tail[1], tail[2], tail[3]]);
+        assert_eq!(
+            flags,
+            SSH_FXF_RENAME_ATOMIC | SSH_FXF_RENAME_NATIVE | SSH_FXF_RENAME_OVERWRITE
+        );
+    }
+
+    #[test]
+    fn build_rename_honours_explicit_flags() {
+        let body = build_rename("a", "b", Some(SSH_FXF_RENAME_OVERWRITE));
+        let tail = &body[body.len() - 4..];
+        let flags = u32::from_be_bytes([tail[0], tail[1], tail[2], tail[3]]);
+        assert_eq!(flags, SSH_FXF_RENAME_OVERWRITE);
+    }
+
+    #[test]
+    fn build_pread_layout() {
+        let body = build_pread(b"h", 0x1122334455667788, 0x10);
+        let expected: Vec<u8> = vec![
+            0, 0, 0, 1, b'h', // handle
+            0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, // offset
+            0x00, 0x00, 0x00, 0x10, // length
+        ];
+        assert_eq!(body, expected);
+    }
+
+    #[test]
+    fn build_pwrite_layout() {
+        let body = build_pwrite(b"h", 1, b"abc");
+        let expected: Vec<u8> = vec![
+            0, 0, 0, 1, b'h', 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 3, b'a', b'b', b'c',
+        ];
+        assert_eq!(body, expected);
+    }
+
+    #[test]
+    fn build_block_unblock_layout() {
+        let body = build_block(b"h", 1, 2, 0xff);
+        assert_eq!(
+            body,
+            vec![0, 0, 0, 1, b'h', 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0xff,]
+        );
+
+        let body = build_unblock(b"h", 3, 4);
+        assert_eq!(
+            body,
+            vec![0, 0, 0, 1, b'h', 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 4]
+        );
+    }
+
+    #[test]
+    fn build_extended_layout() {
+        let body = build_extended("ext@ex", b"payload");
+        assert_eq!(
+            body,
+            vec![
+                0, 0, 0, 6, b'e', b'x', b't', b'@', b'e', b'x', b'p', b'a', b'y', b'l', b'o', b'a',
+                b'd'
+            ]
+        );
+    }
+
+    #[test]
+    fn build_open_layout_includes_flags_and_attrs() {
+        let body = build_open("p", 0x9, &Attributes::new()).unwrap();
+        // path prefix
+        assert_eq!(&body[..5], &[0, 0, 0, 1, b'p']);
+        // flags
+        assert_eq!(&body[5..9], &[0, 0, 0, 0x9]);
+        // attrs: empty => valid=0
+        assert_eq!(&body[9..], &[0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn parse_name_roundtrip() {
+        // Build a NAME body with two entries.
+        let mut body = Vec::new();
+        body.extend_from_slice(&2u32.to_be_bytes());
+        for name in ["foo", "bar"] {
+            body.extend_from_slice(&(name.len() as u32).to_be_bytes());
+            body.extend_from_slice(name.as_bytes());
+            // empty attrs
+            body.extend_from_slice(&0u32.to_be_bytes());
+        }
+        let out = parse_name(&body).unwrap();
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].0, "foo");
+        assert_eq!(out[1].0, "bar");
+        assert_eq!(out[0].1, Attributes::new());
+    }
+
+    #[test]
+    fn parse_readdir_roundtrip() {
+        let mut body = Vec::new();
+        body.extend_from_slice(&1u32.to_be_bytes());
+        let name = "f.txt";
+        let long = "-rw-r--r-- 1 u g 0 Jan 1 1970 f.txt";
+        body.extend_from_slice(&(name.len() as u32).to_be_bytes());
+        body.extend_from_slice(name.as_bytes());
+        body.extend_from_slice(&(long.len() as u32).to_be_bytes());
+        body.extend_from_slice(long.as_bytes());
+        body.extend_from_slice(&0u32.to_be_bytes());
+        let out = parse_readdir(&body).unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].0, name);
+        assert_eq!(out[0].1, long);
+    }
+
+    #[test]
+    fn parse_handle_roundtrip() {
+        let mut body = Vec::new();
+        body.extend_from_slice(&4u32.to_be_bytes());
+        body.extend_from_slice(b"abcd");
+        assert_eq!(parse_handle(&body).unwrap(), b"abcd".to_vec());
+    }
+
+    #[test]
+    fn parse_data_roundtrip() {
+        let mut body = Vec::new();
+        body.extend_from_slice(&3u32.to_be_bytes());
+        body.extend_from_slice(b"xyz");
+        assert_eq!(parse_data(&body).unwrap(), b"xyz".to_vec());
+    }
+
+    #[test]
+    fn parse_version_reads_extensions() {
+        let mut body = Vec::new();
+        body.extend_from_slice(&3u32.to_be_bytes());
+        for (k, v) in [
+            ("posix-rename@openssh.com", "1"),
+            ("statvfs@openssh.com", "2"),
+        ] {
+            body.extend_from_slice(&(k.len() as u32).to_be_bytes());
+            body.extend_from_slice(k.as_bytes());
+            body.extend_from_slice(&(v.len() as u32).to_be_bytes());
+            body.extend_from_slice(v.as_bytes());
+        }
+        let (version, exts) = parse_version(&body).unwrap();
+        assert_eq!(version, 3);
+        assert_eq!(exts.len(), 2);
+        assert_eq!(exts[0].0, "posix-rename@openssh.com");
+        assert_eq!(exts[1].1, "2");
+    }
+
+    #[test]
+    fn parse_version_rejects_non_3() {
+        let body = 4u32.to_be_bytes().to_vec();
+        assert!(parse_version(&body).is_err());
+    }
+
+    #[test]
+    fn split_request_id_rejects_short_buffer() {
+        assert!(split_request_id(&[0, 0]).is_err());
+    }
+
+    #[test]
+    fn error_conversion_preserves_kind() {
+        use std::io::ErrorKind::*;
+        let cases: &[(Error, std::io::ErrorKind)] = &[
+            (Error::NoSuchFile("m".into(), "".into()), NotFound),
+            (Error::NoSuchPath("m".into(), "".into()), NotFound),
+            (Error::NoMedia("m".into(), "".into()), NotFound),
+            (
+                Error::PermissionDenied("m".into(), "".into()),
+                PermissionDenied,
+            ),
+            (Error::WriteProtect("m".into(), "".into()), PermissionDenied),
+            (
+                Error::QuotaExceeded("m".into(), "".into()),
+                PermissionDenied,
+            ),
+            (Error::LockConflict("m".into(), "".into()), PermissionDenied),
+            (Error::NoConnection("m".into(), "".into()), NotConnected),
+            (
+                Error::ConnectionLost("m".into(), "".into()),
+                ConnectionReset,
+            ),
+            (Error::InvalidHandle("m".into(), "".into()), InvalidInput),
+            (Error::InvalidFilename("m".into(), "".into()), InvalidInput),
+            (
+                Error::FileAlreadyExists("m".into(), "".into()),
+                AlreadyExists,
+            ),
+            (Error::Eof("m".into(), "".into()), UnexpectedEof),
+        ];
+        for (err, expected) in cases {
+            let io_err: std::io::Error = err.clone_for_test().into();
+            assert_eq!(
+                io_err.kind(),
+                *expected,
+                "wrong kind for {:?}: got {:?}",
+                err,
+                io_err.kind()
+            );
+        }
+    }
+
+    impl Error {
+        /// Test-only clone. The `Error` variant carrying `io::Error` cannot be
+        /// cloned, but every variant used in `error_conversion_preserves_kind`
+        /// is string-based and safe to duplicate.
+        fn clone_for_test(&self) -> Error {
+            match self {
+                Error::NoSuchFile(a, b) => Error::NoSuchFile(a.clone(), b.clone()),
+                Error::NoSuchPath(a, b) => Error::NoSuchPath(a.clone(), b.clone()),
+                Error::NoMedia(a, b) => Error::NoMedia(a.clone(), b.clone()),
+                Error::PermissionDenied(a, b) => Error::PermissionDenied(a.clone(), b.clone()),
+                Error::WriteProtect(a, b) => Error::WriteProtect(a.clone(), b.clone()),
+                Error::QuotaExceeded(a, b) => Error::QuotaExceeded(a.clone(), b.clone()),
+                Error::LockConflict(a, b) => Error::LockConflict(a.clone(), b.clone()),
+                Error::NoConnection(a, b) => Error::NoConnection(a.clone(), b.clone()),
+                Error::ConnectionLost(a, b) => Error::ConnectionLost(a.clone(), b.clone()),
+                Error::InvalidHandle(a, b) => Error::InvalidHandle(a.clone(), b.clone()),
+                Error::InvalidFilename(a, b) => Error::InvalidFilename(a.clone(), b.clone()),
+                Error::FileAlreadyExists(a, b) => Error::FileAlreadyExists(a.clone(), b.clone()),
+                Error::Eof(a, b) => Error::Eof(a.clone(), b.clone()),
+                _ => panic!("clone_for_test only handles string-based variants"),
+            }
         }
     }
 }

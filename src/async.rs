@@ -354,8 +354,7 @@ mod tests {
         loop {
             match read_packet_async(&mut srv).await {
                 Ok((_cmd, body)) => {
-                    let req_id =
-                        u32::from_be_bytes([body[0], body[1], body[2], body[3]]);
+                    let req_id = u32::from_be_bytes([body[0], body[1], body[2], body[3]]);
                     let mut resp = Vec::new();
                     resp.extend_from_slice(&req_id.to_be_bytes());
                     resp.extend_from_slice(&SSH_FX_OK.to_be_bytes());
@@ -411,9 +410,332 @@ mod tests {
         let client = AsyncSftpClient::new(cr, cw).await.unwrap();
         let attrs = Attributes::new();
         // The request must not hang after the reader exits.
-        let result =
-            tokio::time::timeout(std::time::Duration::from_secs(2), client.mkdir("/x", &attrs))
-                .await;
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            client.mkdir("/x", &attrs),
+        )
+        .await;
         assert!(result.is_ok(), "request hung after reader closed");
+    }
+
+    /// Programmable stub: for each received request, the handler returns
+    /// `(response_cmd, response_body_without_request_id)`. The dispatcher re-adds
+    /// the request id at the front.
+    async fn run_router<F>(mut srv: tokio::io::DuplexStream, mut handler: F)
+    where
+        F: FnMut(u8, &[u8]) -> (u8, Vec<u8>) + Send,
+    {
+        let (kind, _body) = read_packet_async(&mut srv).await.unwrap();
+        assert_eq!(kind, SSH_FXP_INIT);
+        write_packet_async(&mut srv, SSH_FXP_VERSION, &3u32.to_be_bytes())
+            .await
+            .unwrap();
+
+        loop {
+            let (cmd, body) = match read_packet_async(&mut srv).await {
+                Ok(p) => p,
+                Err(_) => return,
+            };
+            let (req_id, payload) = split_request_id(&body).unwrap();
+            let (resp_cmd, resp_body) = handler(cmd, payload);
+            let mut wire = req_id.to_be_bytes().to_vec();
+            wire.extend_from_slice(&resp_body);
+            if write_packet_async(&mut srv, resp_cmd, &wire).await.is_err() {
+                return;
+            }
+        }
+    }
+
+    fn ok_status() -> (u8, Vec<u8>) {
+        let mut body = Vec::new();
+        body.extend_from_slice(&SSH_FX_OK.to_be_bytes());
+        body.extend_from_slice(&0u32.to_be_bytes()); // empty error message
+        body.extend_from_slice(&0u32.to_be_bytes()); // empty lang tag
+        (SSH_FXP_STATUS, body)
+    }
+
+    fn err_status(code: u32) -> (u8, Vec<u8>) {
+        let mut body = Vec::new();
+        body.extend_from_slice(&code.to_be_bytes());
+        body.extend_from_slice(&0u32.to_be_bytes());
+        body.extend_from_slice(&0u32.to_be_bytes());
+        (SSH_FXP_STATUS, body)
+    }
+
+    fn handle_body(handle: &[u8]) -> (u8, Vec<u8>) {
+        let mut body = Vec::with_capacity(4 + handle.len());
+        body.extend_from_slice(&(handle.len() as u32).to_be_bytes());
+        body.extend_from_slice(handle);
+        (SSH_FXP_HANDLE, body)
+    }
+
+    fn attrs_body(a: &Attributes) -> (u8, Vec<u8>) {
+        (SSH_FXP_ATTRS, a.serialize().unwrap())
+    }
+
+    fn data_body(payload: &[u8]) -> (u8, Vec<u8>) {
+        let mut body = Vec::with_capacity(4 + payload.len());
+        body.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+        body.extend_from_slice(payload);
+        (SSH_FXP_DATA, body)
+    }
+
+    fn name_body(entries: &[(&str, Attributes)]) -> (u8, Vec<u8>) {
+        let mut body = Vec::new();
+        body.extend_from_slice(&(entries.len() as u32).to_be_bytes());
+        for (name, attrs) in entries {
+            body.extend_from_slice(&(name.len() as u32).to_be_bytes());
+            body.extend_from_slice(name.as_bytes());
+            body.extend_from_slice(&attrs.serialize().unwrap());
+        }
+        (SSH_FXP_NAME, body)
+    }
+
+    fn readdir_body(entries: &[(&str, &str, Attributes)]) -> (u8, Vec<u8>) {
+        let mut body = Vec::new();
+        body.extend_from_slice(&(entries.len() as u32).to_be_bytes());
+        for (name, longname, attrs) in entries {
+            body.extend_from_slice(&(name.len() as u32).to_be_bytes());
+            body.extend_from_slice(name.as_bytes());
+            body.extend_from_slice(&(longname.len() as u32).to_be_bytes());
+            body.extend_from_slice(longname.as_bytes());
+            body.extend_from_slice(&attrs.serialize().unwrap());
+        }
+        (SSH_FXP_NAME, body)
+    }
+
+    /// Spin up a client against a stub server that uses `handler`.
+    async fn with_stub<F>(
+        handler: F,
+    ) -> AsyncSftpClient<tokio::io::WriteHalf<tokio::io::DuplexStream>>
+    where
+        F: FnMut(u8, &[u8]) -> (u8, Vec<u8>) + Send + 'static,
+    {
+        let (client_io, server_io) = duplex(64 * 1024);
+        tokio::spawn(run_router(server_io, handler));
+        let (cr, cw) = tokio::io::split(client_io);
+        AsyncSftpClient::new(cr, cw).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn async_open_returns_handle() {
+        let client = with_stub(|cmd, _body| {
+            assert_eq!(cmd, SSH_FXP_OPEN);
+            handle_body(b"HANDLE42")
+        })
+        .await;
+        let f = client
+            .open("/x", OpenOptions::new().read(true), &Attributes::new())
+            .await
+            .unwrap();
+        assert_eq!(f.0, b"HANDLE42".to_vec());
+    }
+
+    #[tokio::test]
+    async fn async_open_propagates_no_such_file() {
+        let client = with_stub(|cmd, _| {
+            assert_eq!(cmd, SSH_FXP_OPEN);
+            err_status(SSH_FX_NO_SUCH_FILE)
+        })
+        .await;
+        match client
+            .open(
+                "/missing",
+                OpenOptions::new().read(true),
+                &Attributes::new(),
+            )
+            .await
+        {
+            Err(Error::NoSuchFile(_, _)) => {}
+            other => panic!("expected NoSuchFile, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn async_stat_returns_attributes() {
+        let mut a = Attributes::new();
+        a.size = Some(1234);
+        a.permissions = Some(0o100644);
+        let a_clone = a.clone();
+        let client = with_stub(move |cmd, _| {
+            assert_eq!(cmd, SSH_FXP_STAT);
+            attrs_body(&a_clone)
+        })
+        .await;
+        let got = client.stat("/file", None).await.unwrap();
+        assert_eq!(got, a);
+    }
+
+    #[tokio::test]
+    async fn async_lstat_returns_attributes() {
+        let client = with_stub(|cmd, _| {
+            assert_eq!(cmd, SSH_FXP_LSTAT);
+            attrs_body(&Attributes::new())
+        })
+        .await;
+        client.lstat("/x", None).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn async_fstat_returns_attributes() {
+        let client = with_stub(|cmd, _| {
+            assert_eq!(cmd, SSH_FXP_FSTAT);
+            attrs_body(&Attributes::new())
+        })
+        .await;
+        client.fstat(&File(b"h".to_vec()), None).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn async_pread_returns_data() {
+        let client = with_stub(|cmd, _| {
+            assert_eq!(cmd, SSH_FXP_READ);
+            data_body(b"hello")
+        })
+        .await;
+        let data = client.pread(&File(b"h".to_vec()), 0, 5).await.unwrap();
+        assert_eq!(data, b"hello".to_vec());
+    }
+
+    #[tokio::test]
+    async fn async_pread_propagates_eof() {
+        let client = with_stub(|cmd, _| {
+            assert_eq!(cmd, SSH_FXP_READ);
+            err_status(SSH_FX_EOF)
+        })
+        .await;
+        match client.pread(&File(b"h".to_vec()), 0, 5).await {
+            Err(Error::Eof(_, _)) => {}
+            other => panic!("expected Eof, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn async_pwrite_returns_ok() {
+        let client = with_stub(|cmd, _| {
+            assert_eq!(cmd, SSH_FXP_WRITE);
+            ok_status()
+        })
+        .await;
+        client
+            .pwrite(&File(b"h".to_vec()), 0, b"data")
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn async_opendir_and_readdir() {
+        let client = with_stub(|cmd, _| match cmd {
+            SSH_FXP_OPENDIR => handle_body(b"D"),
+            SSH_FXP_READDIR => readdir_body(&[
+                ("a", "-rw-r--r-- a", Attributes::new()),
+                ("b", "-rw-r--r-- b", Attributes::new()),
+            ]),
+            other => panic!("unexpected cmd {}", other),
+        })
+        .await;
+        let dir = client.opendir("/d").await.unwrap();
+        let entries = client.readdir(&dir).await.unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].0, "a");
+        assert_eq!(entries[1].0, "b");
+    }
+
+    #[tokio::test]
+    async fn async_readdir_eof_surfaces() {
+        let client = with_stub(|cmd, _| match cmd {
+            SSH_FXP_OPENDIR => handle_body(b"D"),
+            SSH_FXP_READDIR => err_status(SSH_FX_EOF),
+            other => panic!("unexpected cmd {}", other),
+        })
+        .await;
+        let dir = client.opendir("/d").await.unwrap();
+        match client.readdir(&dir).await {
+            Err(Error::Eof(_, _)) => {}
+            other => panic!("expected Eof, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn async_realpath_returns_first_name() {
+        let client = with_stub(|cmd, _| {
+            assert_eq!(cmd, SSH_FXP_REALPATH);
+            name_body(&[("/home/alice", Attributes::new())])
+        })
+        .await;
+        assert_eq!(
+            client.realpath(".", None, None).await.unwrap(),
+            "/home/alice"
+        );
+    }
+
+    #[tokio::test]
+    async fn async_readlink_returns_target() {
+        let client = with_stub(|cmd, _| {
+            assert_eq!(cmd, SSH_FXP_READLINK);
+            name_body(&[("/actual", Attributes::new())])
+        })
+        .await;
+        assert_eq!(client.readlink("/lnk").await.unwrap(), "/actual");
+    }
+
+    #[tokio::test]
+    async fn async_status_mutators() {
+        let client = with_stub(|cmd, _| {
+            assert!(matches!(
+                cmd,
+                SSH_FXP_MKDIR
+                    | SSH_FXP_RMDIR
+                    | SSH_FXP_REMOVE
+                    | SSH_FXP_RENAME
+                    | SSH_FXP_SYMLINK
+                    | SSH_FXP_LINK
+                    | SSH_FXP_SETSTAT
+                    | SSH_FXP_FSETSTAT
+                    | SSH_FXP_CLOSE
+                    | SSH_FXP_BLOCK
+                    | SSH_FXP_UNBLOCK
+            ));
+            ok_status()
+        })
+        .await;
+
+        let attrs = Attributes::new();
+        let handle = File(b"h".to_vec());
+        let dir = Directory(b"d".to_vec());
+
+        client.mkdir("/a", &attrs).await.unwrap();
+        client.rmdir("/a").await.unwrap();
+        client.remove("/a").await.unwrap();
+        client.rename("/a", "/b", None).await.unwrap();
+        client.symlink("/b", "/a").await.unwrap();
+        client.hardlink("/b", "/a").await.unwrap();
+        client.setstat("/a", &attrs).await.unwrap();
+        client.fsetstat(&handle, &attrs).await.unwrap();
+        client.fclose(&handle).await.unwrap();
+        client.closedir(&dir).await.unwrap();
+        client.block(&handle, 0, 0, 0).await.unwrap();
+        client.unblock(&handle, 0, 0).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn async_extended_returns_payload_on_reply() {
+        let client = with_stub(|cmd, _| {
+            assert_eq!(cmd, SSH_FXP_EXTENDED);
+            (SSH_FXP_EXTENDED_REPLY, b"payload".to_vec())
+        })
+        .await;
+        let out = client.extended("x", b"").await.unwrap();
+        assert_eq!(out, Some(b"payload".to_vec()));
+    }
+
+    #[tokio::test]
+    async fn async_extended_returns_none_on_ok_status() {
+        let client = with_stub(|cmd, _| {
+            assert_eq!(cmd, SSH_FXP_EXTENDED);
+            ok_status()
+        })
+        .await;
+        assert_eq!(client.extended("x", b"").await.unwrap(), None);
     }
 }
