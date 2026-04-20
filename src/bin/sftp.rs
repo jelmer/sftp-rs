@@ -8,8 +8,8 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 /// A bidirectional channel backed by the stdin/stdout of an `ssh` subprocess.
 struct SshChannel {
     child: Child,
-    stdin: ChildStdin,
-    stdout: ChildStdout,
+    stdin: Option<ChildStdin>,
+    stdout: Option<ChildStdout>,
 }
 
 impl SshChannel {
@@ -32,30 +32,43 @@ impl SshChannel {
             .ok_or_else(|| std::io::Error::other("failed to capture ssh stdout"))?;
         Ok(Self {
             child,
-            stdin,
-            stdout,
+            stdin: Some(stdin),
+            stdout: Some(stdout),
         })
     }
 }
 
 impl Read for SshChannel {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        self.stdout.read(buf)
+        match self.stdout.as_mut() {
+            Some(s) => s.read(buf),
+            None => Ok(0),
+        }
     }
 }
 
 impl Write for SshChannel {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.stdin.write(buf)
+        match self.stdin.as_mut() {
+            Some(s) => s.write(buf),
+            None => Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe)),
+        }
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
-        self.stdin.flush()
+        match self.stdin.as_mut() {
+            Some(s) => s.flush(),
+            None => Ok(()),
+        }
     }
 }
 
 impl Drop for SshChannel {
     fn drop(&mut self) {
+        // Close stdin first so the ssh subsystem sees EOF and exits;
+        // otherwise wait() blocks forever.
+        drop(self.stdin.take());
+        drop(self.stdout.take());
         let _ = self.child.wait();
     }
 }
