@@ -19,8 +19,10 @@ byteorder = "1"
 rustyline = { version = "18", optional = true }
 shell-words = { version = "1", optional = true }
 ssh2 = { version = "0.9", optional = true }
+tokio = { version = "1", optional = true, features = ["io-util", "rt", "sync", "macros", "time"] }
 
 [features]
 default = ["bin"]
 bin = ["dep:rustyline", "dep:shell-words"]
 ssh2 = ["dep:ssh2"]
+async = ["dep:tokio"]
