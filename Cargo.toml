@@ -16,7 +16,7 @@ required-features = ["bin"]
 
 [dependencies]
 byteorder = "1"
-russh = { version = "0.60", optional = true }
+russh = { version = "0.61", optional = true }
 rustyline = { version = "18", optional = true }
 shell-words = { version = "1", optional = true }
 ssh2 = { version = "0.9", optional = true }
